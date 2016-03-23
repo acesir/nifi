@@ -36,7 +36,9 @@ public interface HBaseClientService extends ControllerService {
 
     PropertyDescriptor HADOOP_CONF_FILES = new PropertyDescriptor.Builder()
             .name("Hadoop Configuration Files")
-            .description("Comma-separated list of Hadoop Configuration files, such as hbase-site.xml, including full paths to the files.")
+            .description("Comma-separated list of Hadoop Configuration files," +
+              " such as hbase-site.xml and core-site.xml for kerberos, " +
+              "including full paths to the files.")
             .addValidator(new ConfigFilesValidator())
             .build();
 
