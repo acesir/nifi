@@ -33,6 +33,7 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.logging.ProcessorLog;
+import org.apache.nifi.stream.io.util.StreamScanner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,7 +44,7 @@ import kafka.producer.Partitioner;
  * Wrapper over {@link KafkaProducer} to assist {@link PutKafka} processor with
  * sending content of {@link FlowFile}s to Kafka.
  */
-public class KafkaPublisher implements AutoCloseable {
+class KafkaPublisher implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaPublisher.class);
 
@@ -63,7 +64,7 @@ public class KafkaPublisher implements AutoCloseable {
     KafkaPublisher(Properties kafkaProperties) {
         kafkaProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         kafkaProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        this.producer = new KafkaProducer<byte[], byte[]>(kafkaProperties);
+        this.producer = new KafkaProducer<>(kafkaProperties);
         this.ackWaitTime = Long.parseLong(kafkaProperties.getProperty(ProducerConfig.TIMEOUT_CONFIG)) * 2;
         try {
             if (kafkaProperties.containsKey("partitioner.class")){
@@ -112,14 +113,40 @@ public class KafkaPublisher implements AutoCloseable {
      *            the value of the partition key. Only relevant is user wishes
      *            to provide a custom partition key instead of relying on
      *            variety of provided {@link Partitioner}(s)
+     * @param maxBufferSize maximum message size
      * @return The set containing the failed segment indexes for messages that
      *         failed to be sent to Kafka.
      */
-    BitSet publish(SplittableMessageContext messageContext, InputStream contentStream, Integer partitionKey) {
+    BitSet publish(SplittableMessageContext messageContext, InputStream contentStream, Integer partitionKey,
+            int maxBufferSize) {
+        List<Future<RecordMetadata>> sendFutures = this.split(messageContext, contentStream, partitionKey, maxBufferSize);
+        return this.publish(sendFutures);
+    }
+
+    /**
+     * This method splits (if required) the incoming content stream into
+     * messages to publish to Kafka topic. See publish method for more
+     * details
+     *
+     * @param messageContext
+     *            instance of {@link SplittableMessageContext} which hold
+     *            context information about the message to be sent
+     * @param contentStream
+     *            instance of open {@link InputStream} carrying the content of
+     *            the message(s) to be send to Kafka
+     * @param partitionKey
+     *            the value of the partition key. Only relevant is user wishes
+     *            to provide a custom partition key instead of relying on
+     *            variety of provided {@link Partitioner}(s)
+     * @param maxBufferSize maximum message size
+     * @return The list of messages to publish
+     */
+    List<Future<RecordMetadata>> split(SplittableMessageContext messageContext, InputStream contentStream, Integer partitionKey,
+            int maxBufferSize) {
         List<Future<RecordMetadata>> sendFutures = new ArrayList<>();
         BitSet prevFailedSegmentIndexes = messageContext.getFailedSegments();
         int segmentCounter = 0;
-        StreamScanner scanner = new StreamScanner(contentStream, messageContext.getDelimiterPattern());
+        StreamScanner scanner = new StreamScanner(contentStream, messageContext.getDelimiterBytes(), maxBufferSize);
 
         while (scanner.hasNext()) {
             byte[] content = scanner.next();
@@ -130,20 +157,19 @@ public class KafkaPublisher implements AutoCloseable {
                     partitionKey = this.getPartition(key, topicName);
                 }
                 if (prevFailedSegmentIndexes == null || prevFailedSegmentIndexes.get(segmentCounter)) {
-                    ProducerRecord<byte[], byte[]> message = new ProducerRecord<byte[], byte[]>(topicName, partitionKey, key, content);
+                    ProducerRecord<byte[], byte[]> message = new ProducerRecord<>(topicName, partitionKey, key, content);
                     sendFutures.add(this.toKafka(message));
                 }
                 segmentCounter++;
             }
         }
-        scanner.close();
-        return this.processAcks(sendFutures);
+        return sendFutures;
     }
 
     /**
      *
      */
-    private BitSet processAcks(List<Future<RecordMetadata>> sendFutures) {
+    BitSet publish(List<Future<RecordMetadata>> sendFutures) {
         int segmentCounter = 0;
         BitSet failedSegments = new BitSet();
         for (Future<RecordMetadata> future : sendFutures) {

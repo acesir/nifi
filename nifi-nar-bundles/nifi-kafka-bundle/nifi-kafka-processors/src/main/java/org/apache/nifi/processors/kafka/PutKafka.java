@@ -30,10 +30,12 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
@@ -54,8 +56,7 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.InputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
-
-import kafka.producer.DefaultPartitioner;
+import org.apache.nifi.util.StopWatch;
 
 @InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({ "Apache", "Kafka", "Put", "Send", "Message", "PubSub" })
@@ -157,13 +158,13 @@ public class PutKafka extends AbstractProcessor {
             .build();
     public static final PropertyDescriptor MESSAGE_DELIMITER = new PropertyDescriptor.Builder()
             .name("Message Delimiter")
-            .description("Specifies the delimiter to use for splitting apart multiple messages within a single FlowFile. "
+            .description("Specifies the delimiter (interpreted in its UTF-8 byte representation) to use for splitting apart multiple messages within a single FlowFile. "
                             + "If not specified, the entire content of the FlowFile will be used as a single message. If specified, "
                             + "the contents of the FlowFile will be split on this delimiter and each section sent as a separate Kafka "
                             + "message. Note that if messages are delimited and some messages for a given FlowFile are transferred "
-                            + "successfully while others are not, the messages will be split into individual FlowFiles, such that those "
-                            + "messages that were successfully sent are routed to the 'success' relationship while other messages are "
-                            + "sent to the 'failure' relationship.")
+                            + "successfully while others are not, the FlowFile will be transferred to the 'failure' relationship. In "
+                            + "case the FlowFile is sent back to this processor, only the messages not previously transferred "
+                            + "successfully will be handled by the processor to be retransferred to Kafka.")
             .required(false)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .expressionLanguageSupported(true)
@@ -179,7 +180,8 @@ public class PutKafka extends AbstractProcessor {
     static final PropertyDescriptor MAX_RECORD_SIZE = new PropertyDescriptor.Builder()
             .name("Max Record Size")
             .description("The maximum size that any individual record can be.")
-            .addValidator(StandardValidators.DATA_SIZE_VALIDATOR).required(true)
+            .addValidator(StandardValidators.DATA_SIZE_VALIDATOR)
+            .required(true)
             .defaultValue("1 MB")
             .build();
     public static final PropertyDescriptor TIMEOUT = new PropertyDescriptor.Builder()
@@ -293,20 +295,33 @@ public class PutKafka extends AbstractProcessor {
             final SplittableMessageContext messageContext = this.buildMessageContext(flowFile, context, session);
             final Integer partitionKey = this.determinePartition(messageContext, context, flowFile);
             final AtomicReference<BitSet> failedSegmentsRef = new AtomicReference<BitSet>();
+            final List<Future<RecordMetadata>> sendFutures = new ArrayList<>();
+
+            StopWatch timer = new StopWatch(true);
             session.read(flowFile, new InputStreamCallback() {
                 @Override
                 public void process(InputStream contentStream) throws IOException {
-                    failedSegmentsRef.set(kafkaPublisher.publish(messageContext, contentStream, partitionKey));
+                    int maxRecordSize = context.getProperty(MAX_RECORD_SIZE).asDataSize(DataUnit.B).intValue();
+                    sendFutures.addAll(kafkaPublisher.split(messageContext, contentStream, partitionKey, maxRecordSize));
+                    failedSegmentsRef.set(kafkaPublisher.publish(sendFutures));
                 }
             });
+            timer.stop();
 
+            final long duration = timer.getDuration(TimeUnit.MILLISECONDS);
+            final int messagesToSend = sendFutures.size();
+            final int messagesSent = messagesToSend - failedSegmentsRef.get().cardinality();
+            final String details = messagesSent + " message(s) over " + messagesToSend + " sent successfully";
             if (failedSegmentsRef.get().isEmpty()) {
-                session.getProvenanceReporter().send(flowFile, context.getProperty(SEED_BROKERS).getValue() + "/" + messageContext.getTopicName());
+                session.getProvenanceReporter().send(flowFile, "kafka://" + context.getProperty(SEED_BROKERS).getValue() + "/" + messageContext.getTopicName(), details, duration);
                 flowFile = this.cleanUpFlowFileIfNecessary(flowFile, session);
                 session.transfer(flowFile, REL_SUCCESS);
             } else {
+                if(messagesSent != 0) {
+                    session.getProvenanceReporter().send(flowFile, "kafka://" + context.getProperty(SEED_BROKERS).getValue() + "/" + messageContext.getTopicName(), details, duration);
+                }
                 flowFile = session.putAllAttributes(flowFile, this.buildFailedFlowFileAttributes(failedSegmentsRef.get(), messageContext));
-                session.transfer(flowFile, REL_FAILURE);
+                session.transfer(session.penalize(flowFile), REL_FAILURE);
             }
 
         } else {
@@ -393,7 +408,7 @@ public class PutKafka extends AbstractProcessor {
         attributes.put(ATTR_FAILED_SEGMENTS, new String(failedSegments.toByteArray(), StandardCharsets.UTF_8));
         attributes.put(ATTR_TOPIC, messageContext.getTopicName());
         attributes.put(ATTR_KEY, messageContext.getKeyBytesAsString());
-        attributes.put(ATTR_DELIMITER, messageContext.getDelimiterPattern());
+        attributes.put(ATTR_DELIMITER, new String(messageContext.getDelimiterBytes(), StandardCharsets.UTF_8));
         return attributes;
     }
 
@@ -403,21 +418,22 @@ public class PutKafka extends AbstractProcessor {
     private SplittableMessageContext buildMessageContext(FlowFile flowFile, ProcessContext context, ProcessSession session) {
         String topicName;
         byte[] key;
-        String delimiterPattern;
+        byte[] delimiterBytes;
 
         String failedSegmentsString = flowFile.getAttribute(ATTR_FAILED_SEGMENTS);
         if (flowFile.getAttribute(ATTR_PROC_ID) != null && flowFile.getAttribute(ATTR_PROC_ID).equals(this.getIdentifier()) && failedSegmentsString != null) {
             topicName = flowFile.getAttribute(ATTR_TOPIC);
-            key = flowFile.getAttribute(ATTR_KEY).getBytes();
-            delimiterPattern = flowFile.getAttribute(ATTR_DELIMITER);
+            key = flowFile.getAttribute(ATTR_KEY) == null ? null : flowFile.getAttribute(ATTR_KEY).getBytes();
+            delimiterBytes = flowFile.getAttribute(ATTR_DELIMITER) != null ? flowFile.getAttribute(ATTR_DELIMITER).getBytes(StandardCharsets.UTF_8) : null;
         } else {
             failedSegmentsString = null;
             topicName = context.getProperty(TOPIC).evaluateAttributeExpressions(flowFile).getValue();
             String _key = context.getProperty(KEY).evaluateAttributeExpressions(flowFile).getValue();
             key = _key == null ? null : _key.getBytes(StandardCharsets.UTF_8);
-            delimiterPattern = context.getProperty(MESSAGE_DELIMITER).evaluateAttributeExpressions(flowFile).getValue();
+            delimiterBytes = context.getProperty(MESSAGE_DELIMITER).isSet()
+                    ? context.getProperty(MESSAGE_DELIMITER).evaluateAttributeExpressions(flowFile).getValue().getBytes(StandardCharsets.UTF_8) : null;
         }
-        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, key, delimiterPattern);
+        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, key, delimiterBytes);
         if (failedSegmentsString != null) {
             messageContext.setFailedSegmentsAsByteArray(failedSegmentsString.getBytes());
         }
@@ -454,7 +470,7 @@ public class PutKafka extends AbstractProcessor {
         if (partitionStrategy.equalsIgnoreCase(ROUND_ROBIN_PARTITIONING.getValue())) {
             partitionerClass = Partitioners.RoundRobinPartitioner.class.getName();
         } else if (partitionStrategy.equalsIgnoreCase(RANDOM_PARTITIONING.getValue())) {
-            partitionerClass = DefaultPartitioner.class.getName();
+            partitionerClass = Partitioners.RandomPartitioner.class.getName();
         }
         properties.setProperty("partitioner.class", partitionerClass);
 

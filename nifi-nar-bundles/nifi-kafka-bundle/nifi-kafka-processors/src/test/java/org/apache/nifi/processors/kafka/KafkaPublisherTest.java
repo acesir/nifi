@@ -43,13 +43,6 @@ import kafka.javaapi.consumer.ConsumerConnector;
 
 public class KafkaPublisherTest {
 
-    private static final String sampleData = "The true sign of intelligence is not knowledge but imagination.\n"
-            + "It's not that I'm so smart, it's just that I stay with problems longer.\n"
-            + "The only source of knowledge is experience.\n"
-            + "Only two things are infinite, the universe and human stupidity, and I'm not sure about the former.\n";
-
-    private static final String sampleData2 = "foo|bar|baz";
-
     private static EmbeddedKafka kafkaLocal;
 
     private static EmbeddedKafkaProducerHelper producerHelper;
@@ -67,15 +60,9 @@ public class KafkaPublisherTest {
         kafkaLocal.stop();
     }
 
-    String test = "Khalid El Bakraoui rented an apartment in Brussels that was raided last week and both are suspected of having ties to "
-            + "the terror attacks in Paris in November, the source said. While Belgian officials say both brothers were suicide bombers, a U.S. "
-            + "official briefed earlier on preliminary evidence from the investigation says authorities are looking at the possibility that one of "
-            + "the airport explosions may have been caused by a bomb inside a suitcase and the other was a suicide bombing. But identifying the brothers "
-            + "should help spring the investigation forward, says Cedric Leighton, a CNN military analyst and the former deputy director for the Joint Chiefs of Staff.";
-
     @Test
     public void validateSuccessfulSendAsWhole() throws Exception {
-        InputStream fis = new ByteArrayInputStream(sampleData.getBytes(StandardCharsets.UTF_8));
+        InputStream fis = new ByteArrayInputStream("Hello Kafka".getBytes(StandardCharsets.UTF_8));
         String topicName = "validateSuccessfulSendAsWhole";
 
         Properties kafkaProperties = this.buildProducerProperties();
@@ -83,7 +70,7 @@ public class KafkaPublisherTest {
 
         SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, null);
 
-        publisher.publish(messageContext, fis, null);
+        publisher.publish(messageContext, fis, null, 2000);
 
         fis.close();
         publisher.close();
@@ -99,44 +86,20 @@ public class KafkaPublisherTest {
 
     @Test
     public void validateSuccessfulSendAsDelimited() throws Exception {
-        InputStream fis = new ByteArrayInputStream(sampleData.getBytes(StandardCharsets.UTF_8));
+        InputStream fis = new ByteArrayInputStream(
+                "Hello Kafka 1\nHello Kafka 2\nHello Kafka 3\nHello Kafka 4\n".getBytes(StandardCharsets.UTF_8));
         String topicName = "validateSuccessfulSendAsDelimited";
 
         Properties kafkaProperties = this.buildProducerProperties();
         KafkaPublisher publisher = new KafkaPublisher(kafkaProperties);
 
-        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, "\n");
+        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, "\n".getBytes(StandardCharsets.UTF_8));
 
-        publisher.publish(messageContext, fis, null);
+        publisher.publish(messageContext, fis, null, 2000);
         publisher.close();
 
         ConsumerIterator<byte[], byte[]> iter = this.buildConsumer(topicName);
         assertNotNull(iter.next());
-        assertNotNull(iter.next());
-        assertNotNull(iter.next());
-        assertNotNull(iter.next());
-        try {
-            iter.next();
-            fail();
-        } catch (ConsumerTimeoutException e) {
-            // that's OK since this is the Kafka mechanism to unblock
-        }
-    }
-
-    @Test
-    public void validateSuccessfulSendAsDelimited2() throws Exception {
-        InputStream fis = new ByteArrayInputStream(sampleData2.getBytes(StandardCharsets.UTF_8));
-        String topicName = "validateSuccessfulSendAsDelimited2";
-
-        Properties kafkaProperties = this.buildProducerProperties();
-        KafkaPublisher publisher = new KafkaPublisher(kafkaProperties);
-
-        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, "|");
-
-        publisher.publish(messageContext, fis, null);
-        publisher.close();
-
-        ConsumerIterator<byte[], byte[]> iter = this.buildConsumer(topicName);
         assertNotNull(iter.next());
         assertNotNull(iter.next());
         assertNotNull(iter.next());
@@ -150,30 +113,51 @@ public class KafkaPublisherTest {
 
     @Test
     public void validateSuccessfulReSendOfFailedSegments() throws Exception {
-        InputStream fis = new ByteArrayInputStream(sampleData.getBytes(StandardCharsets.UTF_8));
+        InputStream fis = new ByteArrayInputStream(
+                "Hello Kafka 1\nHello Kafka 2\nHello Kafka 3\nHello Kafka 4\n".getBytes(StandardCharsets.UTF_8));
         String topicName = "validateSuccessfulReSendOfFailedSegments";
 
         Properties kafkaProperties = this.buildProducerProperties();
 
         KafkaPublisher publisher = new KafkaPublisher(kafkaProperties);
 
-        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, "\n");
+        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, "\n".getBytes(StandardCharsets.UTF_8));
         messageContext.setFailedSegments(1, 3);
 
-        publisher.publish(messageContext, fis, null);
+        publisher.publish(messageContext, fis, null, 2000);
         publisher.close();
 
         ConsumerIterator<byte[], byte[]> iter = this.buildConsumer(topicName);
         String m1 = new String(iter.next().message());
         String m2 = new String(iter.next().message());
-        assertEquals("It's not that I'm so smart, it's just that I stay with problems longer.", m1);
-        assertEquals("Only two things are infinite, the universe and human stupidity, and I'm not sure about the former.", m2);
+        assertEquals("Hello Kafka 2", m1);
+        assertEquals("Hello Kafka 4", m2);
         try {
             iter.next();
             fail();
         } catch (ConsumerTimeoutException e) {
             // that's OK since this is the Kafka mechanism to unblock
         }
+    }
+
+    @Test
+    public void validateWithMultiByteCharacters() throws Exception {
+        String data = "僠THIS IS MY NEW TEXT.僠IT HAS A NEWLINE.";
+        InputStream fis = new ByteArrayInputStream(data.getBytes(StandardCharsets.UTF_8));
+        String topicName = "validateWithMultiByteCharacters";
+
+        Properties kafkaProperties = this.buildProducerProperties();
+
+        KafkaPublisher publisher = new KafkaPublisher(kafkaProperties);
+
+        SplittableMessageContext messageContext = new SplittableMessageContext(topicName, null, null);
+
+        publisher.publish(messageContext, fis, null, 2000);
+        publisher.close();
+
+        ConsumerIterator<byte[], byte[]> iter = this.buildConsumer(topicName);
+        String r = new String(iter.next().message(), StandardCharsets.UTF_8);
+        assertEquals(data, r);
     }
 
     private Properties buildProducerProperties() {
