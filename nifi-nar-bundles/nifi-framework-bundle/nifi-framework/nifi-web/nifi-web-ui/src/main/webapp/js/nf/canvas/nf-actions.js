@@ -21,6 +21,7 @@ nf.Actions = (function () {
 
     var config = {
         urls: {
+            api: '../nifi-api',
             controller: '../nifi-api/controller'
         }
     };
@@ -48,9 +49,6 @@ nf.Actions = (function () {
                     $('#drop-request-status-dialog').modal('setButtonModel', []);
                 }
             }
-        }).draggable({
-            containment: 'parent',
-            handle: '.dialog-header'
         });
     };
     
@@ -62,18 +60,12 @@ nf.Actions = (function () {
      * @param {object} entity
      */
     var updateResource = function (uri, entity) {
-        // add the revision
-        entity['revision'] = nf.Client.getRevision();
-
         return $.ajax({
             type: 'PUT',
             url: uri,
             data: JSON.stringify(entity),
             dataType: 'json',
             contentType: 'application/json'
-        }).done(function (response) {
-            // update the revision
-            nf.Client.setRevision(response.revision);
         }).fail(function (xhr, status, error) {
             if (xhr.status === 400 || xhr.status === 404 || xhr.status === 409) {
                 nf.Dialog.showOkDialog({
@@ -86,23 +78,16 @@ nf.Actions = (function () {
 
     // create a method for updating process groups and processors
     var updateProcessGroup = function (response) {
-        if (nf.Common.isDefinedAndNotNull(response.processGroup)) {
-            if (nf.Common.isDefinedAndNotNull(response.processGroup.contents)) {
-                var contents = response.processGroup.contents;
-
-                // update all the components in the contents
-                nf.Graph.set(contents);
-
-                // update each process group
-                $.each(contents.processGroups, function (_, processGroup) {
-                    // reload the group's connections
-                    var connections = nf.Connection.getComponentConnections(processGroup.id);
-                    $.each(connections, function (_, connection) {
-                        nf.Connection.reload(connection);
-                    });
-                });
-            }
-        }
+        $.ajax({
+            type: 'GET',
+            url: config.urls.api + '/flow/process-groups/' + encodeURIComponent(response.id),
+            data: {
+                verbose: true
+            },
+            dataType: 'json'
+        }).done(function (response) {
+            nf.Graph.set(response.processGroupFlow.flow);
+        });
     };
 
     return {
@@ -121,7 +106,7 @@ nf.Actions = (function () {
         enterGroup: function (selection) {
             if (selection.size() === 1 && nf.CanvasUtils.isProcessGroup(selection)) {
                 var selectionData = selection.datum();
-                nf.CanvasUtils.enterGroup(selectionData.component.id);
+                nf.CanvasUtils.enterGroup(selectionData.id);
             }
         },
         
@@ -161,18 +146,20 @@ nf.Actions = (function () {
                         url: d.component.uri,
                         dataType: 'json'
                     }).done(function (response) {
-                        var remoteProcessGroup = response.remoteProcessGroup;
+                        var remoteProcessGroup = response.component;
 
                         // the timestamp has not updated yet, poll again
                         if (refreshTimestamp === remoteProcessGroup.flowRefreshed) {
                             schedule(nextDelay);
                         } else {
-                            nf.RemoteProcessGroup.set(response.remoteProcessGroup);
+                            nf.RemoteProcessGroup.set(response);
 
                             // reload the group's connections
                             var connections = nf.Connection.getComponentConnections(remoteProcessGroup.id);
                             $.each(connections, function (_, connection) {
-                                nf.Connection.reload(connection);
+                                if (connection.accessPolicy.canRead) {
+                                    nf.Connection.reload(connection.component);
+                                }
                             });
                         }
                     });
@@ -371,7 +358,7 @@ nf.Actions = (function () {
                     };
                 } else {
                     var selectionData = selection.datum();
-                    var selectionPosition = selectionData.component.position;
+                    var selectionPosition = selectionData.position;
 
                     box = {
                         x: selectionPosition.x,
@@ -412,27 +399,23 @@ nf.Actions = (function () {
                     var selected = d3.select(this);
 
                     // build the entity
-                    var entity = {};
-                    entity[nf[d.type].getEntityKey(d)] = {
-                        'id': d.component.id,
-                        'state': 'STOPPED'
+                    var entity = {
+                        'revision': nf.Client.getRevision(d),
+                        'component': {
+                            'id': d.id,
+                            'state': 'STOPPED'
+                        }
                     };
 
                     enableRequests.push(updateResource(d.component.uri, entity).done(function (response) {
-                        if (nf.CanvasUtils.isProcessor(selected)) {
-                            nf.Processor.set(response.processor);
-                        } else if (nf.CanvasUtils.isInputPort(selected)) {
-                            nf.Port.set(response.inputPort);
-                        } else if (nf.CanvasUtils.isOutputPort(selected)) {
-                            nf.Port.set(response.outputPort);
-                        }
+                        nf[d.type].set(response);
                     }));
                 });
 
-                // refresh the toolbar once the updates have completed
+                // inform Angular app once the updates have completed
                 if (enableRequests.length > 0) {
                     $.when.apply(window, enableRequests).always(function () {
-                        nf.CanvasToolbar.refresh();
+                        nf.ng.Bridge.digest();
                     });
                 }
             }
@@ -459,27 +442,23 @@ nf.Actions = (function () {
                     var selected = d3.select(this);
 
                     // build the entity
-                    var entity = {};
-                    entity[nf[d.type].getEntityKey(d)] = {
-                        'id': d.component.id,
-                        'state': 'DISABLED'
+                    var entity = {
+                        'revision': nf.Client.getRevision(d),
+                        'component': {
+                            'id': d.id,
+                            'state': 'DISABLED'
+                        }
                     };
 
                     disableRequests.push(updateResource(d.component.uri, entity).done(function (response) {
-                        if (nf.CanvasUtils.isProcessor(selected)) {
-                            nf.Processor.set(response.processor);
-                        } else if (nf.CanvasUtils.isInputPort(selected)) {
-                            nf.Port.set(response.inputPort);
-                        } else if (nf.CanvasUtils.isOutputPort(selected)) {
-                            nf.Port.set(response.outputPort);
-                        }
+                        nf[d.type].set(response);
                     }));
                 });
 
-                // refresh the toolbar once the updates have completed
+                // inform Angular app once the updates have completed
                 if (disableRequests.length > 0) {
                     $.when.apply(window, disableRequests).always(function () {
-                        nf.CanvasToolbar.refresh();
+                        nf.ng.Bridge.digest();
                     });
                 }
             }
@@ -496,7 +475,7 @@ nf.Actions = (function () {
 
                 // open the provenance page with the specified component
                 nf.Shell.showPage('provenance?' + $.param({
-                    componentId: selectionData.component.id
+                    componentId: selectionData.id
                 }));
             }
         },
@@ -510,13 +489,11 @@ nf.Actions = (function () {
             if (selection.empty()) {
                 // build the entity
                 var entity = {
-                    'processGroup': {
-                        'id': nf.Canvas.getGroupId(),
-                        'running': true
-                    }
+                    'id': nf.Canvas.getGroupId(),
+                    'state': 'RUNNING'
                 };
 
-                updateResource(config.urls.controller + '/process-groups/' + encodeURIComponent(nf.Canvas.getGroupId()), entity).done(updateProcessGroup);
+                updateResource(config.urls.api + '/flow/process-groups/' + encodeURIComponent(nf.Canvas.getGroupId()), entity).done(updateProcessGroup);
             } else {
                 var componentsToStart = selection.filter(function (d) {
                     return nf.CanvasUtils.isRunnable(d3.select(this));
@@ -537,7 +514,7 @@ nf.Actions = (function () {
 
                         // processor endpoint does not use running flag...
                         var component = {
-                            'id': d.component.id,
+                            'id': d.id,
                         };
                         if (nf.CanvasUtils.isProcessor(selected) || nf.CanvasUtils.isInputPort(selected) || nf.CanvasUtils.isOutputPort(selected)) {
                             component['state'] = 'RUNNING';
@@ -546,32 +523,32 @@ nf.Actions = (function () {
                         }
 
                         // build the entity
-                        var entity = {};
-                        entity[nf[d.type].getEntityKey(d)] = component;
+                        var entity = {
+                            'revision': nf.Client.getRevision(d),
+                            'component': component
+                        };
 
                         startRequests.push(updateResource(d.component.uri, entity).done(function (response) {
-                            if (nf.CanvasUtils.isProcessor(selected)) {
-                                nf.Processor.set(response.processor);
-                            } else if (nf.CanvasUtils.isProcessGroup(selected)) {
-                                nf.ProcessGroup.set(response.processGroup);
+                            if (nf.CanvasUtils.isProcessGroup(selected)) {
+                                nf.ProcessGroup.set(response);
 
                                 // reload the group's connections
-                                var connections = nf.Connection.getComponentConnections(response.processGroup.id);
+                                var connections = nf.Connection.getComponentConnections(response.id);
                                 $.each(connections, function (_, connection) {
-                                    nf.Connection.reload(connection);
+                                    if (connection.accessPolicy.canRead) {
+                                        nf.Connection.reload(connection.component);
+                                    }
                                 });
-                            } else if (nf.CanvasUtils.isInputPort(selected)) {
-                                nf.Port.set(response.inputPort);
-                            } else if (nf.CanvasUtils.isOutputPort(selected)) {
-                                nf.Port.set(response.outputPort);
+                            } else {
+                                nf[d.type].set(response);
                             }
                         }));
                     });
 
-                    // refresh the toolbar once the updates have completed
+                    // inform Angular app once the updates have completed
                     if (startRequests.length > 0) {
                         $.when.apply(window, startRequests).always(function () {
-                            nf.CanvasToolbar.refresh();
+                            nf.ng.Bridge.digest();
                         });
                     }
                 }
@@ -587,13 +564,11 @@ nf.Actions = (function () {
             if (selection.empty()) {
                 // build the entity
                 var entity = {
-                    'processGroup': {
-                        'id': nf.Canvas.getGroupId(),
-                        'running': false
-                    }
+                    'id': nf.Canvas.getGroupId(),
+                    'state': 'STOPPED'
                 };
 
-                updateResource(config.urls.controller + '/process-groups/' + encodeURIComponent(nf.Canvas.getGroupId()), entity).done(updateProcessGroup);
+                updateResource(config.urls.api + '/flow/process-groups/' + encodeURIComponent(nf.Canvas.getGroupId()), entity).done(updateProcessGroup);
             } else {
                 var componentsToStop = selection.filter(function (d) {
                     return nf.CanvasUtils.isStoppable(d3.select(this));
@@ -614,7 +589,7 @@ nf.Actions = (function () {
 
                         // processor endpoint does not use running flag...
                         var component = {
-                            'id': d.component.id,
+                            'id': d.id,
                         };
                         if (nf.CanvasUtils.isProcessor(selected) || nf.CanvasUtils.isInputPort(selected) || nf.CanvasUtils.isOutputPort(selected)) {
                             component['state'] = 'STOPPED';
@@ -623,32 +598,32 @@ nf.Actions = (function () {
                         }
 
                         // build the entity
-                        var entity = {};
-                        entity[nf[d.type].getEntityKey(d)] = component;
+                        var entity = {
+                            'revision': nf.Client.getRevision(d),
+                            'component': component
+                        };
 
                         stopRequests.push(updateResource(d.component.uri, entity).done(function (response) {
-                            if (nf.CanvasUtils.isProcessor(selected)) {
-                                nf.Processor.set(response.processor);
-                            } else if (nf.CanvasUtils.isProcessGroup(selected)) {
-                                nf.ProcessGroup.set(response.processGroup);
+                            if (nf.CanvasUtils.isProcessGroup(selected)) {
+                                nf.ProcessGroup.set(response);
 
                                 // reload the group's connections
-                                var connections = nf.Connection.getComponentConnections(response.processGroup.id);
+                                var connections = nf.Connection.getComponentConnections(response.id);
                                 $.each(connections, function (_, connection) {
-                                    nf.Connection.reload(connection);
+                                    if (connection.accessPolicy.canRead) {
+                                        nf.Connection.reload(connection.component);
+                                    }
                                 });
-                            } else if (nf.CanvasUtils.isInputPort(selected)) {
-                                nf.Port.set(response.inputPort);
-                            } else if (nf.CanvasUtils.isOutputPort(selected)) {
-                                nf.Port.set(response.outputPort);
+                            } else {
+                                nf[d.type].set(response);
                             }
                         }));
                     });
 
-                    // refresh the toolbar once the updates have completed
+                    // inform Angular app once the updates have completed
                     if (stopRequests.length > 0) {
                         $.when.apply(window, stopRequests).always(function () {
-                            nf.CanvasToolbar.refresh();
+                            nf.ng.Bridge.digest();
                         });
                     }
                 }
@@ -668,15 +643,17 @@ nf.Actions = (function () {
             // start each selected component
             componentsToEnable.each(function (d) {
                 // build the entity
-                var entity = {};
-                entity[nf[d.type].getEntityKey()] = {
-                    'id': d.component.id,
-                    'transmitting': true
+                var entity = {
+                    'revision': nf.Client.getRevision(d),
+                    'component': {
+                        'id': d.id,
+                        'transmitting': true
+                    }
                 };
 
                 // start transmitting
                 updateResource(d.component.uri, entity).done(function (response) {
-                    nf.RemoteProcessGroup.set(response.remoteProcessGroup);
+                    nf.RemoteProcessGroup.set(response);
                 });
             });
         },
@@ -694,14 +671,16 @@ nf.Actions = (function () {
             // stop each selected component
             componentsToDisable.each(function (d) {
                 // build the entity
-                var entity = {};
-                entity[nf[d.type].getEntityKey()] = {
-                    'id': d.component.id,
-                    'transmitting': false
+                var entity = {
+                    'revision': nf.Client.getRevision(d),
+                    'component': {
+                        'id': d.id,
+                        'transmitting': false
+                    }
                 };
 
                 updateResource(d.component.uri, entity).done(function (response) {
-                    nf.RemoteProcessGroup.set(response.remoteProcessGroup);
+                    nf.RemoteProcessGroup.set(response);
                 });
             });
         },
@@ -712,13 +691,16 @@ nf.Actions = (function () {
          * @param {selection} selection     Selection of the component to be configured
          */
         showConfiguration: function (selection) {
-            if (selection.size() === 1) {
+            if (selection.empty()) {
+                nf.ProcessGroupConfiguration.showConfiguration(nf.Canvas.getGroupId());
+            } else if (selection.size() === 1) {
+                var selectionData = selection.datum();
                 if (nf.CanvasUtils.isProcessor(selection)) {
                     nf.ProcessorConfiguration.showConfiguration(selection);
                 } else if (nf.CanvasUtils.isLabel(selection)) {
                     nf.LabelConfiguration.showConfiguration(selection);
                 } else if (nf.CanvasUtils.isProcessGroup(selection)) {
-                    nf.ProcessGroupConfiguration.showConfiguration(selection);
+                    nf.ProcessGroupConfiguration.showConfiguration(selectionData.id);
                 } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
                     nf.RemoteProcessGroupConfiguration.showConfiguration(selection);
                 } else if (nf.CanvasUtils.isInputPort(selection) || nf.CanvasUtils.isOutputPort(selection)) {
@@ -731,18 +713,20 @@ nf.Actions = (function () {
         
         // Defines an action for showing component details (like configuration but read only).
         showDetails: function (selection) {
-            if (selection.size() === 1) {
+            if (selection.empty()) {
+                nf.ProcessGroupDetails.showConfiguration(nf.Canvas.getGroupId());
+            } else if (selection.size() === 1) {
                 var selectionData = selection.datum();
                 if (nf.CanvasUtils.isProcessor(selection)) {
-                    nf.ProcessorDetails.showDetails(nf.Canvas.getGroupId(), selectionData.component.id);
+                    nf.ProcessorDetails.showDetails(nf.Canvas.getGroupId(), selectionData.id);
                 } else if (nf.CanvasUtils.isProcessGroup(selection)) {
-                    nf.ProcessGroupDetails.showDetails(selection);
+                    nf.ProcessGroupDetails.showConfiguration(selectionData.id);
                 } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
                     nf.RemoteProcessGroupDetails.showDetails(selection);
                 } else if (nf.CanvasUtils.isInputPort(selection) || nf.CanvasUtils.isOutputPort(selection)) {
                     nf.PortDetails.showDetails(selection);
                 } else if (nf.CanvasUtils.isConnection(selection)) {
-                    nf.ConnectionDetails.showDetails(nf.Canvas.getGroupId(), selectionData.component.id);
+                    nf.ConnectionDetails.showDetails(nf.Canvas.getGroupId(), selectionData.id);
                 }
             }
         },
@@ -770,13 +754,13 @@ nf.Actions = (function () {
             if (selection.size() === 1) {
                 var selectionData = selection.datum();
                 if (nf.CanvasUtils.isProcessor(selection)) {
-                    nf.StatusHistory.showProcessorChart(nf.Canvas.getGroupId(), selectionData.component.id);
+                    nf.StatusHistory.showProcessorChart(nf.Canvas.getGroupId(), selectionData.id);
                 } else if (nf.CanvasUtils.isProcessGroup(selection)) {
-                    nf.StatusHistory.showProcessGroupChart(nf.Canvas.getGroupId(), selectionData.component.id);
+                    nf.StatusHistory.showProcessGroupChart(nf.Canvas.getGroupId(), selectionData.id);
                 } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
-                    nf.StatusHistory.showRemoteProcessGroupChart(nf.Canvas.getGroupId(), selectionData.component.id);
+                    nf.StatusHistory.showRemoteProcessGroupChart(nf.Canvas.getGroupId(), selectionData.id);
                 } else if (nf.CanvasUtils.isConnection(selection)) {
-                    nf.StatusHistory.showConnectionChart(nf.Canvas.getGroupId(), selectionData.component.id);
+                    nf.StatusHistory.showConnectionChart(nf.Canvas.getGroupId(), selectionData.id);
                 }
             }
         },
@@ -795,8 +779,10 @@ nf.Actions = (function () {
         /**
          * Reloads the status for the entire canvas (components and flow.)
          */
-        reloadStatus: function () {
-            nf.Canvas.reloadStatus();
+        reload: function () {
+            nf.Canvas.reload({
+                'transition': true
+            });
         },
         
         /**
@@ -813,7 +799,7 @@ nf.Actions = (function () {
             } else {
                 if (selection.size() === 1) {
                     var selectionData = selection.datum();
-                    var revision = nf.Client.getRevision();
+                    var revision = nf.Client.getRevision(selectionData);
 
                     $.ajax({
                         type: 'DELETE',
@@ -823,15 +809,12 @@ nf.Actions = (function () {
                         }),
                         dataType: 'json'
                     }).done(function (response) {
-                        // update the revision
-                        nf.Client.setRevision(response.revision);
-
                         // remove the component/connection in question
-                        nf[selectionData.type].remove(selectionData.component.id);
+                        nf[selectionData.type].remove(selectionData.id);
 
                         // if the selection is a connection, reload the source and destination accordingly
                         if (nf.CanvasUtils.isConnection(selection) === false) {
-                            var connections = nf.Connection.getComponentConnections(selectionData.component.id);
+                            var connections = nf.Connection.getComponentConnections(selectionData.id);
                             if (connections.length > 0) {
                                 var ids = [];
                                 $.each(connections, function (_, connection) {
@@ -843,18 +826,17 @@ nf.Actions = (function () {
                             }
                         }
 
-                        // refresh the birdseye/toolbar
+                        // refresh the birdseye
                         nf.Birdseye.refresh();
-                        nf.CanvasToolbar.refresh();
+                        // inform Angular app values have changed
+                        nf.ng.Bridge.digest();
                     }).fail(nf.Common.handleAjaxError);
                 } else {
                     // create a snippet for the specified component and link to the data flow
-                    var snippetDetails = nf.Snippet.marshal(selection, true);
-                    nf.Snippet.create(snippetDetails).done(function (response) {
-                        var snippet = response.snippet;
-
+                    var snippet = nf.Snippet.marshal(selection);
+                    nf.Snippet.create(snippet).done(function (response) {
                         // remove the snippet, effectively removing the components
-                        nf.Snippet.remove(snippet.id).done(function () {
+                        nf.Snippet.remove(response.snippet.id).done(function () {
                             var components = d3.map();
 
                             // add the id to the type's array
@@ -868,11 +850,11 @@ nf.Actions = (function () {
                             // go through each component being removed
                             selection.each(function (d) {
                                 // remove the corresponding entry
-                                addComponent(d.type, d.component.id);
+                                addComponent(d.type, d.id);
 
                                 // if this is not a connection, see if it has any connections that need to be removed
                                 if (d.type !== 'Connection') {
-                                    var connections = nf.Connection.getComponentConnections(d.component.id);
+                                    var connections = nf.Connection.getComponentConnections(d.id);
                                     if (connections.length > 0) {
                                         $.each(connections, function (_, connection) {
                                             addComponent('Connection', connection.id);
@@ -893,19 +875,12 @@ nf.Actions = (function () {
                                 nf.Connection.remove(components.get('Connection'));
                             }
 
-                            // refresh the birdseye/toolbar
+                            // refresh the birdseye
                             nf.Birdseye.refresh();
-                            nf.CanvasToolbar.refresh();
-                        }).fail(function (xhr, status, error) {
-                            // unable to acutally remove the components so attempt to
-                            // unlink and remove just the snippet - if unlinking fails
-                            // just ignore
-                            nf.Snippet.unlink(snippet.id).done(function () {
-                                nf.Snippet.remove(snippet.id);
-                            });
-
-                            nf.Common.handleAjaxError(xhr, status, error);
-                        });
+                            
+                            // inform Angular app values have changed
+                            nf.ng.Bridge.digest();
+                        }).fail(nf.Common.handleAjaxError);
                     }).fail(nf.Common.handleAjaxError);
                 }
             }
@@ -1064,7 +1039,7 @@ nf.Actions = (function () {
                     // issue the request to delete the flow files
                     $.ajax({
                         type: 'POST',
-                        url: connection.component.uri + '/drop-requests',
+                        url: '../nifi-api/flowfile-queues/' + connection.id + '/drop-requests',
                         dataType: 'json',
                         contentType: 'application/json'
                     }).done(function(response) {
@@ -1178,7 +1153,7 @@ nf.Actions = (function () {
                 var origin = nf.CanvasUtils.getOrigin(selection);
 
                 var pt = {'x': origin.x, 'y': origin.y};
-                $.when(nf.CanvasToolbox.promptForGroupName(pt)).done(function (processGroup) {
+                $.when(nf.ng.Bridge.get('appCtrl.serviceProvider.headerCtrl.toolboxCtrl.groupComponent').promptForGroupName(pt)).done(function (processGroup) {
                     var group = d3.select('#id-' + processGroup.id);
                     nf.CanvasUtils.moveComponents(selection, group);
                 });
@@ -1246,22 +1221,23 @@ nf.Actions = (function () {
                             var templateDescription = $('#new-template-description').val();
 
                             // create a snippet
-                            var snippetDetails = nf.Snippet.marshal(selection, false);
+                            var snippet = nf.Snippet.marshal(selection);
 
                             // create the snippet
-                            nf.Snippet.create(snippetDetails).done(function (response) {
-                                var snippet = response.snippet;
+                            nf.Snippet.create(snippet).done(function (response) {
+                                var createSnippetEntity = {
+                                    'name': templateName,
+                                    'description': templateDescription,
+                                    'snippetId': response.snippet.id
+                                };
 
                                 // create the template
                                 $.ajax({
                                     type: 'POST',
-                                    url: config.urls.controller + '/templates',
-                                    data: {
-                                        name: templateName,
-                                        description: templateDescription,
-                                        snippetId: snippet.id
-                                    },
-                                    dataType: 'json'
+                                    url: config.urls.api + '/process-groups/' + encodeURIComponent(nf.Canvas.getGroupId()) + '/templates',
+                                    data: JSON.stringify(createSnippetEntity),
+                                    dataType: 'json',
+                                    contentType: 'application/json'
                                 }).done(function () {
                                     // show the confirmation dialog
                                     nf.Dialog.showOkDialog({
@@ -1269,9 +1245,6 @@ nf.Actions = (function () {
                                         overlayBackground: false
                                     });
                                 }).always(function () {
-                                    // remove the snippet
-                                    nf.Snippet.remove(snippet.id);
-
                                     // clear the template dialog fields
                                     $('#new-template-name').val('');
                                     $('#new-template-description').val('');
@@ -1307,7 +1280,7 @@ nf.Actions = (function () {
 
             // copy the snippet details
             nf.Clipboard.copy({
-                snippet: nf.Snippet.marshal(selection, false),
+                snippet: nf.Snippet.marshal(selection),
                 origin: origin
             });
         },
@@ -1347,8 +1320,6 @@ nf.Actions = (function () {
 
                     // create a snippet from the details
                     nf.Snippet.create(data['snippet']).done(function (createResponse) {
-                        var snippet = createResponse.snippet;
-
                         // determine the origin of the bounding box of the copy
                         var origin = pasteLocation;
                         var snippetOrigin = data['origin'];
@@ -1361,20 +1332,19 @@ nf.Actions = (function () {
                         }
 
                         // copy the snippet to the new location
-                        nf.Snippet.copy(snippet.id, nf.Canvas.getGroupId(), origin).done(function (copyResponse) {
-                            var snippetContents = copyResponse.contents;
+                        nf.Snippet.copy(createResponse.snippet.id, origin).done(function (copyResponse) {
+                            var snippetFlow = copyResponse.flow;
 
                             // update the graph accordingly
-                            nf.Graph.add(snippetContents, true);
+                            nf.Graph.add(snippetFlow, {
+                                'selectAll': true
+                            });
 
                             // update component visibility
                             nf.Canvas.View.updateVisibility();
 
                             // refresh the birdseye/toolbar
                             nf.Birdseye.refresh();
-
-                            // remove the original snippet
-                            nf.Snippet.remove(snippet.id).fail(reject);
                         }).fail(function () {
                             // an error occured while performing the copy operation, reload the
                             // graph in case it was a partial success
@@ -1421,7 +1391,7 @@ nf.Actions = (function () {
             // determine the current max zIndex
             var maxZIndex = -1;
             $.each(nf.Connection.get(), function (_, otherConnection) {
-                if (connection.component.id !== otherConnection.component.id && otherConnection.component.zIndex > maxZIndex) {
+                if (connection.id !== otherConnection.id && otherConnection.component.zIndex > maxZIndex) {
                     maxZIndex = otherConnection.component.zIndex;
                 }
             });
@@ -1433,9 +1403,9 @@ nf.Actions = (function () {
 
                 // build the connection entity
                 var connectionEntity = {
-                    'revision': nf.Client.getRevision(),
-                    'connection': {
-                        'id': connection.component.id,
+                    'revision': nf.Client.getRevision(connection),
+                    'component': {
+                        'id': connection.id,
                         'zIndex': zIndex
                     }
                 };
@@ -1449,11 +1419,8 @@ nf.Actions = (function () {
                     contentType: 'application/json'
                 }).done(function (response) {
                     // update the edge's zIndex
-                    nf.Connection.set(response.connection);
+                    nf.Connection.set(response);
                     nf.Connection.reorder();
-
-                    // update the revision
-                    nf.Client.setRevision(response.revision);
                 });
             }
         }

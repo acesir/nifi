@@ -24,53 +24,37 @@ import com.wordnik.swagger.annotations.ApiResponse;
 import com.wordnik.swagger.annotations.ApiResponses;
 import com.wordnik.swagger.annotations.Authorization;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.AccessDeniedException;
+import org.apache.nifi.authorization.AuthorizationRequest;
+import org.apache.nifi.authorization.AuthorizationResult;
+import org.apache.nifi.authorization.AuthorizationResult.Result;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.ResourceFactory;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.cluster.coordination.ClusterCoordinator;
+import org.apache.nifi.cluster.coordination.http.replication.RequestReplicator;
 import org.apache.nifi.cluster.manager.NodeResponse;
 import org.apache.nifi.cluster.manager.exception.UnknownNodeException;
-import org.apache.nifi.cluster.manager.impl.WebClusterManager;
-import org.apache.nifi.cluster.node.Node;
 import org.apache.nifi.cluster.protocol.NodeIdentifier;
-import org.apache.nifi.user.NiFiUser;
-import org.apache.nifi.util.NiFiProperties;
-import org.apache.nifi.web.ConfigurationSnapshot;
-import org.apache.nifi.web.IllegalClusterResourceRequestException;
+import org.apache.nifi.controller.FlowController;
 import org.apache.nifi.web.NiFiServiceFacade;
 import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.api.dto.AboutDTO;
-import org.apache.nifi.web.api.dto.BannerDTO;
-import org.apache.nifi.web.api.dto.ControllerConfigurationDTO;
-import org.apache.nifi.web.api.dto.ControllerDTO;
 import org.apache.nifi.web.api.dto.CounterDTO;
 import org.apache.nifi.web.api.dto.CountersDTO;
-import org.apache.nifi.web.api.dto.RevisionDTO;
-import org.apache.nifi.web.api.dto.search.SearchResultsDTO;
-import org.apache.nifi.web.api.dto.status.ControllerStatusDTO;
-import org.apache.nifi.web.api.entity.AboutEntity;
-import org.apache.nifi.web.api.entity.AuthorityEntity;
-import org.apache.nifi.web.api.entity.BannerEntity;
 import org.apache.nifi.web.api.entity.ControllerConfigurationEntity;
-import org.apache.nifi.web.api.entity.ControllerEntity;
-import org.apache.nifi.web.api.entity.ControllerServiceTypesEntity;
-import org.apache.nifi.web.api.entity.ControllerStatusEntity;
+import org.apache.nifi.web.api.entity.ControllerServiceEntity;
 import org.apache.nifi.web.api.entity.CounterEntity;
 import org.apache.nifi.web.api.entity.CountersEntity;
 import org.apache.nifi.web.api.entity.Entity;
-import org.apache.nifi.web.api.entity.IdentityEntity;
-import org.apache.nifi.web.api.entity.PrioritizerTypesEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupEntity;
-import org.apache.nifi.web.api.entity.ProcessorTypesEntity;
-import org.apache.nifi.web.api.entity.ReportingTaskTypesEntity;
-import org.apache.nifi.web.api.entity.SearchResultsEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.IntegerParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-import org.apache.nifi.web.security.user.NiFiUserUtils;
+import org.apache.nifi.web.api.entity.ReportingTaskEntity;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DefaultValue;
-import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
-import javax.ws.rs.HEAD;
 import javax.ws.rs.HttpMethod;
 import javax.ws.rs.POST;
 import javax.ws.rs.PUT;
@@ -78,15 +62,11 @@ import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
-import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.net.URI;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
+import java.util.Collections;
 import java.util.Set;
 
 /**
@@ -94,168 +74,40 @@ import java.util.Set;
  */
 @Path("/controller")
 @Api(
-        value = "/controller",
-        description = "Provides realtime command and control of this NiFi instance"
+    value = "/controller",
+    description = "Provides realtime command and control of this NiFi instance"
 )
 public class ControllerResource extends ApplicationResource {
 
     private NiFiServiceFacade serviceFacade;
-    private WebClusterManager clusterManager;
-    private NiFiProperties properties;
+    private Authorizer authorizer;
+
+    private ReportingTaskResource reportingTaskResource;
+    private ControllerServiceResource controllerServiceResource;
+    private ClusterCoordinator clusterCoordinator;
 
     @Context
     private ResourceContext resourceContext;
 
     /**
-     * Locates the Provenance sub-resource.
-     *
-     * @return the Provenance sub-resource
+     * Authorizes access to the flow.
      */
-    @Path("/provenance")
-    @ApiOperation(
-            value = "Gets the provenance resource",
-            response = ProvenanceResource.class
-    )
-    public ProvenanceResource getProvenanceResource() {
-        return resourceContext.getResource(ProvenanceResource.class);
-    }
+    private void authorizeController(final RequestAction action) {
+        final NiFiUser user = NiFiUserUtils.getNiFiUser();
 
-    /**
-     * Locates the Template sub-resource.
-     *
-     * @return the Template sub-resource
-     */
-    @Path("/templates")
-    @ApiOperation(
-            value = "Gets the template resource",
-            response = TemplateResource.class
-    )
-    public TemplateResource getTemplateResource() {
-        return resourceContext.getResource(TemplateResource.class);
-    }
+        final AuthorizationRequest request = new AuthorizationRequest.Builder()
+                .resource(ResourceFactory.getControllerResource())
+                .identity(user.getIdentity())
+                .anonymous(user.isAnonymous())
+                .accessAttempt(true)
+                .action(action)
+                .build();
 
-    /**
-     * Locates the Snippets sub-resource.
-     *
-     * @return the Snippets sub-resource
-     */
-    @Path("/snippets")
-    @ApiOperation(
-            value = "Gets the snippet resource",
-            response = SnippetResource.class
-    )
-    public SnippetResource getSnippetResource() {
-        return resourceContext.getResource(SnippetResource.class);
-    }
-
-    /**
-     * Returns a 200 OK response to indicate this is a valid controller endpoint.
-     *
-     * @return An OK response with an empty entity body.
-     */
-    @HEAD
-    @Produces(MediaType.APPLICATION_JSON)
-    public Response getControllerHead() {
-        if (properties.isClusterManager()) {
-            throw new IllegalClusterResourceRequestException("A cluster manager cannot process the request.");
+        final AuthorizationResult result = authorizer.authorize(request);
+        if (!Result.Approved.equals(result.getResult())) {
+            final String message = StringUtils.isNotBlank(result.getExplanation()) ? result.getExplanation() : "Access is denied";
+            throw new AccessDeniedException(message);
         }
-
-        return Response.ok().build();
-    }
-
-    /**
-     * Returns the details of this NiFi.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A controllerEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    // TODO - @PreAuthorize("hasRole('ROLE_NIFI')")
-    @ApiOperation(
-            value = "Returns the details about this NiFi necessary to communicate via site to site",
-            response = ControllerEntity.class,
-            authorizations = @Authorization(value = "NiFi", type = "ROLE_NIFI")
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getController(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
-        }
-
-        // get the controller dto
-        final ControllerDTO controller = serviceFacade.getController();
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // build the response entity
-        final ControllerEntity entity = new ControllerEntity();
-        entity.setRevision(revision);
-        entity.setController(controller);
-
-        // generate the response
-        return clusterContext(noCache(Response.ok(entity))).build();
-    }
-
-    /**
-     * Performs a search request for this controller.
-     *
-     * @param value Search string
-     * @return A searchResultsEntity
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/search-results")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Performs a search against this NiFi using the specified search term",
-            response = SearchResultsEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response searchController(@QueryParam("q") @DefaultValue(StringUtils.EMPTY) String value) {
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
-        }
-
-        // query the controller
-        final SearchResultsDTO results = serviceFacade.searchController(value);
-
-        // create the entity
-        final SearchResultsEntity entity = new SearchResultsEntity();
-        entity.setSearchResultsDTO(results);
-
-        // generate the response
-        return clusterContext(noCache(Response.ok(entity))).build();
     }
 
     /**
@@ -265,14 +117,12 @@ public class ControllerResource extends ApplicationResource {
      * Alternatively, we could have performed a PUT request. However, PUT requests are supposed to be idempotent and this endpoint is certainly not.
      *
      * @param httpServletRequest request
-     * @param version The revision is used to verify the client is working with the latest version of the flow.
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @return A processGroupEntity.
      */
     @POST
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/archive")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("archive")
     // TODO - @PreAuthorize("hasRole('ROLE_DFM')")
     @ApiOperation(
             value = "Creates a new archive of this NiFi flow configuration",
@@ -293,165 +143,36 @@ public class ControllerResource extends ApplicationResource {
                 @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response createArchive(
-            @Context HttpServletRequest httpServletRequest,
-            @ApiParam(
-                    value = "The revision is used to verify the client is working with the latest version of the flow.",
-                    required = true
-            )
-            @FormParam(VERSION) LongParameter version,
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @FormParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
+    public Response createArchive(@Context HttpServletRequest httpServletRequest) {
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            // don't need to convert from POST to PUT because no resource ID exists on the nodes
-            return clusterManager.applyRequest(HttpMethod.POST, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.POST);
         }
 
         // handle expects request (usually from the cluster manager)
-        final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
+        final String expects = httpServletRequest.getHeader(RequestReplicator.REQUEST_VALIDATION_HTTP_HEADER);
         if (expects != null) {
             return generateContinueResponse().build();
         }
 
-        // determine the specified version
-        Long clientVersion = null;
-        if (version != null) {
-            clientVersion = version.getLong();
-        }
-
         // create the archive
-        final ConfigurationSnapshot<Void> controllerResponse = serviceFacade.createArchive(new Revision(clientVersion, clientId.getClientId()));
-
-        // create the revision
-        final RevisionDTO updatedRevision = new RevisionDTO();
-        updatedRevision.setClientId(clientId.getClientId());
-        updatedRevision.setVersion(controllerResponse.getVersion());
-
-        // create the response entity
-        final ProcessGroupEntity controllerEntity = new ProcessGroupEntity();
-        controllerEntity.setRevision(updatedRevision);
+        final ProcessGroupEntity entity = serviceFacade.createArchive();
 
         // generate the response
         URI uri = URI.create(generateResourceUri("controller", "archive"));
-        return clusterContext(generateCreatedResponse(uri, controllerEntity)).build();
-    }
-
-    /**
-     * Gets current revision of this NiFi.
-     *
-     * @return A revisionEntity
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/revision")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Gets the current revision of this NiFi",
-            notes = "NiFi employs an optimistic locking strategy where the client must include a revision in their request when "
-            + "performing an update. If the specified revision does not match the current base revision a 409 status code "
-            + "is returned. The revision is comprised of a clientId and a version number. The version is a simple integer "
-            + "value that is incremented with each change. Including the most recent version tells NiFi that your working "
-            + "with the most recent flow. In addition to the version the client who is performing the updates is recorded. "
-            + "This allows the same client to submit multiple requests without having to wait for the previously ones to "
-            + "return. Invoking this endpoint will return the current base revision. It is also available when retrieving "
-            + "a process group and in the response of all mutable requests.",
-            response = Entity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getRevision() {
-        // create the current revision
-        final RevisionDTO revision = serviceFacade.getRevision();
-
-        // create the response entity
-        final Entity entity = new Entity();
-        entity.setRevision(revision);
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the status for this NiFi.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A controllerStatusEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/status")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Gets the current status of this NiFi",
-            response = Entity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getControllerStatus(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
-        }
-
-        final ControllerStatusDTO controllerStatus = serviceFacade.getControllerStatus();
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        final ControllerStatusEntity entity = new ControllerStatusEntity();
-        entity.setRevision(revision);
-        entity.setControllerStatus(controllerStatus);
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
+        return clusterContext(generateCreatedResponse(uri, entity)).build();
     }
 
     /**
      * Retrieves the counters report for this NiFi.
      *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @return A countersEntity.
+     * @throws InterruptedException if interrupted
      */
     @GET
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/counters")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("counters")
     // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
     @ApiOperation(
             value = "Gets the current counters for this NiFi",
@@ -472,11 +193,6 @@ public class ControllerResource extends ApplicationResource {
     )
     public Response getCounters(
             @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @ApiParam(
                 value = "Whether or not to include the breakdown per node. Optional, defaults to false",
                 required = false
             )
@@ -485,18 +201,18 @@ public class ControllerResource extends ApplicationResource {
                 value = "The id of the node where to get the status.",
                 required = false
             )
-            @QueryParam("clusterNodeId") String clusterNodeId) {
+        @QueryParam("clusterNodeId") String clusterNodeId) throws InterruptedException {
 
         // ensure a valid request
         if (Boolean.TRUE.equals(nodewise) && clusterNodeId != null) {
             throw new IllegalArgumentException("Nodewise requests cannot be directed at a specific node.");
         }
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
+        // replicate if necessary
+        if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders());
+                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
                 final CountersEntity entity = (CountersEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -507,28 +223,22 @@ public class ControllerResource extends ApplicationResource {
                 return nodeResponse.getResponse();
             } else {
                 // get the target node and ensure it exists
-                final Node targetNode = clusterManager.getNode(clusterNodeId);
+                final NodeIdentifier targetNode = clusterCoordinator.getNodeIdentifier(clusterNodeId);
                 if (targetNode == null) {
                     throw new UnknownNodeException("The specified cluster node does not exist.");
                 }
 
-                final Set<NodeIdentifier> targetNodes = new HashSet<>();
-                targetNodes.add(targetNode.getNodeId());
+                final Set<NodeIdentifier> targetNodes = Collections.singleton(targetNode);
 
                 // replicate the request to the specific node
-                return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders(), targetNodes).getResponse();
+                return getRequestReplicator().replicate(targetNodes, HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse().getResponse();
             }
         }
 
         final CountersDTO countersReport = serviceFacade.getCounters();
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
         // create the response entity
         final CountersEntity entity = new CountersEntity();
-        entity.setRevision(revision);
         entity.setCounters(countersReport);
 
         // generate the response
@@ -539,14 +249,13 @@ public class ControllerResource extends ApplicationResource {
      * Update the specified counter. This will reset the counter value to 0.
      *
      * @param httpServletRequest request
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @param id The id of the counter.
      * @return A counterEntity.
      */
     @PUT
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/counters/{id}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("counters/{id}")
     // TODO - @PreAuthorize("hasRole('ROLE_DFM')")
     @ApiOperation(
             value = "Updates the specified counter. This will reset the counter value to 0",
@@ -566,20 +275,14 @@ public class ControllerResource extends ApplicationResource {
     )
     public Response updateCounter(
             @Context HttpServletRequest httpServletRequest,
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @FormParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
             @PathParam("id") String id) {
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.PUT, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.PUT);
         }
 
         // handle expects request (usually from the cluster manager)
-        final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
+        final String expects = httpServletRequest.getHeader(RequestReplicator.REQUEST_VALIDATION_HTTP_HEADER);
         if (expects != null) {
             return generateContinueResponse().build();
         }
@@ -587,13 +290,8 @@ public class ControllerResource extends ApplicationResource {
         // reset the specified counter
         final CounterDTO counter = serviceFacade.updateCounter(id);
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
         // create the response entity
         final CounterEntity entity = new CounterEntity();
-        entity.setRevision(revision);
         entity.setCounter(counter);
 
         // generate the response
@@ -603,13 +301,12 @@ public class ControllerResource extends ApplicationResource {
     /**
      * Retrieves the configuration for this NiFi.
      *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @return A controllerConfigurationEntity.
      */
     @GET
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/config")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("config")
     // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN', 'ROLE_NIFI')")
     @ApiOperation(
             value = "Retrieves the configuration for this NiFi",
@@ -629,88 +326,16 @@ public class ControllerResource extends ApplicationResource {
                 @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response getControllerConfig(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
+    public Response getControllerConfig() {
+        // TODO
+//        authorizeController(RequestAction.READ);
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.GET);
         }
 
-        final ControllerConfigurationDTO controllerConfig = serviceFacade.getControllerConfiguration();
-        controllerConfig.setUri(generateResourceUri("controller"));
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        final ControllerConfigurationEntity entity = new ControllerConfigurationEntity();
-        entity.setRevision(revision);
-        entity.setConfig(controllerConfig);
-
-        // generate the response
+        final ControllerConfigurationEntity entity = serviceFacade.getControllerConfiguration();
         return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Update the configuration for this NiFi.
-     *
-     * @param httpServletRequest request
-     * @param version The revision is used to verify the client is working with the latest version of the flow.
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param name The name of this controller.
-     * @param comments The comments of this controller.
-     * @param maxTimerDrivenThreadCount The maximum number of timer driven threads this controller has available.
-     * @param maxEventDrivenThreadCount The maximum number of timer driven threads this controller has available.
-     * @return A controllerConfigurationEntity.
-     */
-    @PUT
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/config")
-    // TODO - @PreAuthorize("hasRole('ROLE_DFM')")
-    public Response updateControllerConfig(
-            @Context HttpServletRequest httpServletRequest,
-            @FormParam(VERSION) LongParameter version,
-            @FormParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @FormParam("name") String name,
-            @FormParam("comments") String comments,
-            @FormParam("maxTimerDrivenThreadCount") IntegerParameter maxTimerDrivenThreadCount,
-            @FormParam("maxEventDrivenThreadCount") IntegerParameter maxEventDrivenThreadCount) {
-
-        // create the controller config dto
-        final ControllerConfigurationDTO configDTO = new ControllerConfigurationDTO();
-        configDTO.setName(name);
-        configDTO.setComments(comments);
-
-        if (maxTimerDrivenThreadCount != null) {
-            configDTO.setMaxTimerDrivenThreadCount(maxTimerDrivenThreadCount.getInteger());
-        }
-
-        if (maxEventDrivenThreadCount != null) {
-            configDTO.setMaxEventDrivenThreadCount(maxEventDrivenThreadCount.getInteger());
-        }
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        if (version != null) {
-            revision.setVersion(version.getLong());
-        }
-
-        // create the dto entity
-        ControllerConfigurationEntity entity = new ControllerConfigurationEntity();
-        entity.setRevision(revision);
-        entity.setConfig(configDTO);
-
-        // update the controller configuration
-        return updateControllerConfig(httpServletRequest, entity);
     }
 
     /**
@@ -721,9 +346,9 @@ public class ControllerResource extends ApplicationResource {
      * @return A controllerConfigurationEntity.
      */
     @PUT
-    @Consumes({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/config")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("config")
     // TODO - @PreAuthorize("hasRole('ROLE_DFM')")
     @ApiOperation(
             value = "Retrieves the configuration for this NiFi",
@@ -755,473 +380,171 @@ public class ControllerResource extends ApplicationResource {
             throw new IllegalArgumentException("Revision must be specified.");
         }
 
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            // change content type to JSON for serializing entity
-            final Map<String, String> headersToOverride = new HashMap<>();
-            headersToOverride.put("content-type", MediaType.APPLICATION_JSON);
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.PUT, configEntity);
+        }
 
-            // replicate the request
-            return clusterManager.applyRequest(HttpMethod.PUT, getAbsolutePath(), updateClientId(configEntity), getHeaders(headersToOverride)).getResponse();
+        final Revision revision = getRevision(configEntity.getRevision(), FlowController.class.getSimpleName());
+        return withWriteLock(
+                serviceFacade,
+                revision,
+                lookup -> {
+                    authorizeController(RequestAction.WRITE);
+                },
+                null,
+                () -> {
+                    final ControllerConfigurationEntity entity = serviceFacade.updateControllerConfiguration(revision, configEntity.getConfig());
+                    return clusterContext(generateOkResponse(entity)).build();
+                }
+        );
+    }
+
+    // ---------------
+    // reporting tasks
+    // ---------------
+
+    /**
+     * Creates a new Reporting Task.
+     *
+     * @param httpServletRequest request
+     * @param reportingTaskEntity A reportingTaskEntity.
+     * @return A reportingTaskEntity.
+     */
+    @POST
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("reporting-tasks")
+    // TODO - @PreAuthorize("hasRole('ROLE_DFM')")
+    @ApiOperation(
+        value = "Creates a new reporting task",
+        response = ReportingTaskEntity.class,
+        authorizations = {
+            @Authorization(value = "Data Flow Manager", type = "ROLE_DFM")
+        }
+    )
+    @ApiResponses(
+        value = {
+            @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+            @ApiResponse(code = 401, message = "Client could not be authenticated."),
+            @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+            @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+        }
+    )
+    public Response createReportingTask(
+        @Context HttpServletRequest httpServletRequest,
+        @ApiParam(
+            value = "The reporting task configuration details.",
+            required = true
+        ) ReportingTaskEntity reportingTaskEntity) {
+
+        if (reportingTaskEntity == null || reportingTaskEntity.getComponent() == null) {
+            throw new IllegalArgumentException("Reporting task details must be specified.");
+        }
+
+        if (reportingTaskEntity.getComponent().getId() != null) {
+            throw new IllegalArgumentException("Reporting task ID cannot be specified.");
+        }
+
+        if (StringUtils.isBlank(reportingTaskEntity.getComponent().getType())) {
+            throw new IllegalArgumentException("The type of reporting task to create must be specified.");
+        }
+
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.POST, reportingTaskEntity);
         }
 
         // handle expects request (usually from the cluster manager)
-        final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
+        final String expects = httpServletRequest.getHeader(RequestReplicator.REQUEST_VALIDATION_HTTP_HEADER);
         if (expects != null) {
             return generateContinueResponse().build();
         }
 
-        final RevisionDTO revision = configEntity.getRevision();
-        final ConfigurationSnapshot<ControllerConfigurationDTO> controllerResponse
-                = serviceFacade.updateControllerConfiguration(new Revision(revision.getVersion(), revision.getClientId()), configEntity.getConfig());
-        final ControllerConfigurationDTO controllerConfig = controllerResponse.getConfiguration();
-        controllerConfig.setUri(generateResourceUri("controller"));
+        // set the processor id as appropriate
+        reportingTaskEntity.getComponent().setId(generateUuid());
 
-        // get the updated revision
-        final RevisionDTO updatedRevision = new RevisionDTO();
-        updatedRevision.setClientId(revision.getClientId());
-        updatedRevision.setVersion(controllerResponse.getVersion());
+        // create the reporting task and generate the json
+        final ReportingTaskEntity entity = serviceFacade.createReportingTask(reportingTaskEntity.getComponent());
+        reportingTaskResource.populateRemainingReportingTaskEntityContent(entity);
 
-        // create the response entity
-        final ControllerConfigurationEntity entity = new ControllerConfigurationEntity();
-        entity.setRevision(updatedRevision);
-        entity.setConfig(controllerConfig);
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
+        // build the response
+        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
     }
 
-    /**
-     * Retrieves the identity of the user making the request.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return An identityEntity
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/identity")
-    @ApiOperation(
-            value = "Retrieves the user identity of the user making the request",
-            response = IdentityEntity.class
-    )
-    public Response getIdentity(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
+    // -------------------
+    // controller services
+    // -------------------
 
-        // note that the cluster manager will handle this request directly
-        final NiFiUser user = NiFiUserUtils.getNiFiUser();
-        if (user == null) {
-            throw new WebApplicationException(new Throwable("Unable to access details for current user."));
+    /**
+     * Creates a new Controller Service.
+     *
+     * @param httpServletRequest request
+     * @param controllerServiceEntity A controllerServiceEntity.
+     * @return A controllerServiceEntity.
+     */
+    @POST
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("controller-services")
+    // TODO - @PreAuthorize("hasRole('ROLE_DFM')")
+    @ApiOperation(
+        value = "Creates a new controller service",
+        response = ControllerServiceEntity.class,
+        authorizations = {
+            @Authorization(value = "Data Flow Manager", type = "ROLE_DFM")
         }
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        IdentityEntity entity = new IdentityEntity();
-        entity.setRevision(revision);
-        entity.setUserId(user.getIdentity());
-        entity.setIdentity(user.getUserName());
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the user details, including the authorities, about the user making the request.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A authoritiesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/authorities")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN', 'ROLE_PROXY', 'ROLE_NIFI', 'ROLE_PROVENANCE')")
-    @ApiOperation(
-            value = "Retrieves the user details, including the authorities, about the user making the request",
-            response = AuthorityEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN"),
-                @Authorization(value = "Proxy", type = "ROLE_PROXY"),
-                @Authorization(value = "NiFi", type = "ROLE_NIFI"),
-                @Authorization(value = "Provenance", type = "ROLE_PROVENANCE")
-            }
     )
     @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
+        value = {
+            @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+            @ApiResponse(code = 401, message = "Client could not be authenticated."),
+            @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+            @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+        }
     )
-    public Response getAuthorities(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
+    public Response createControllerService(
+        @Context final HttpServletRequest httpServletRequest,
+        @ApiParam(
+            value = "The controller service configuration details.",
+            required = true
+        ) final ControllerServiceEntity controllerServiceEntity) {
 
-        // note that the cluster manager will handle this request directly
-        final NiFiUser user = NiFiUserUtils.getNiFiUser();
-        if (user == null) {
-            throw new WebApplicationException(new Throwable("Unable to access details for current user."));
+        if (controllerServiceEntity == null || controllerServiceEntity.getComponent() == null) {
+            throw new IllegalArgumentException("Controller service details must be specified.");
         }
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        AuthorityEntity entity = new AuthorityEntity();
-        entity.setRevision(revision);
-        entity.setUserId(user.getIdentity());
-        entity.setAuthorities(new HashSet<>(Arrays.asList("ROLE_MONITOR", "ROLE_DFM", "ROLE_ADMIN", "ROLE_PROXY", "ROLE_NIFI", "ROLE_PROVENANCE")));
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the banners for this NiFi.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A bannerEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/banners")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Retrieves the banners for this NiFi",
-            response = BannerEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getBanners(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        // get the banner from the properties - will come from the NCM when clustered
-        final String bannerText = properties.getBannerText();
-
-        // create the DTO
-        final BannerDTO bannerDTO = new BannerDTO();
-        bannerDTO.setHeaderText(bannerText);
-        bannerDTO.setFooterText(bannerText);
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        final BannerEntity entity = new BannerEntity();
-        entity.setRevision(revision);
-        entity.setBanners(bannerDTO);
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the types of processors that this NiFi supports.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A processorTypesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/processor-types")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Retrieves the types of processors that this NiFi supports",
-            response = ProcessorTypesEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getProcessorTypes(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (controllerServiceEntity.getComponent().getId() != null) {
+            throw new IllegalArgumentException("Controller service ID cannot be specified.");
         }
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create response entity
-        final ProcessorTypesEntity entity = new ProcessorTypesEntity();
-        entity.setRevision(revision);
-        entity.setProcessorTypes(serviceFacade.getProcessorTypes());
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the types of controller services that this NiFi supports.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param serviceType Returns only services that implement this type
-     * @return A controllerServicesTypesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/controller-service-types")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Retrieves the types of controller services that this NiFi supports",
-            response = ControllerServiceTypesEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getControllerServiceTypes(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @ApiParam(
-                    value = "If specified, will only return controller services of this type.",
-                    required = false
-            )
-            @QueryParam("serviceType") String serviceType) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (StringUtils.isBlank(controllerServiceEntity.getComponent().getType())) {
+            throw new IllegalArgumentException("The type of controller service to create must be specified.");
         }
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create response entity
-        final ControllerServiceTypesEntity entity = new ControllerServiceTypesEntity();
-        entity.setRevision(revision);
-        entity.setControllerServiceTypes(serviceFacade.getControllerServiceTypes(serviceType));
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the types of reporting tasks that this NiFi supports.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A controllerServicesTypesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/reporting-task-types")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Retrieves the types of reporting tasks that this NiFi supports",
-            response = ReportingTaskTypesEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getReportingTaskTypes(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.GET);
         }
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create response entity
-        final ReportingTaskTypesEntity entity = new ReportingTaskTypesEntity();
-        entity.setRevision(revision);
-        entity.setReportingTaskTypes(serviceFacade.getReportingTaskTypes());
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves the types of prioritizers that this NiFi supports.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return A prioritizerTypesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/prioritizers")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Retrieves the types of prioritizers that this NiFi supports",
-            response = PrioritizerTypesEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getPrioritizers(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
+        // handle expects request (usually from the cluster manager)
+        final boolean validationPhase = isValidationPhase(httpServletRequest);
+        if (validationPhase || !isTwoPhaseRequest(httpServletRequest)) {
+            // authorize access
+            serviceFacade.authorizeAccess(lookup -> {
+                // TODO - authorize controller access
+            });
+        }
+        if (validationPhase) {
+            return generateContinueResponse().build();
         }
 
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
+        // set the processor id as appropriate
+        controllerServiceEntity.getComponent().setId(generateUuid());
 
-        // create response entity
-        final PrioritizerTypesEntity entity = new PrioritizerTypesEntity();
-        entity.setRevision(revision);
-        entity.setPrioritizerTypes(serviceFacade.getWorkQueuePrioritizerTypes());
+        // create the controller service and generate the json
+        final ControllerServiceEntity entity = serviceFacade.createControllerService(null, controllerServiceEntity.getComponent());
+        controllerServiceResource.populateRemainingControllerServiceContent(entity.getComponent());
 
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**
-     * Retrieves details about this NiFi to put in the About dialog.
-     *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @return An aboutEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Path("/about")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-            value = "Retrieves details about this NiFi to put in the About dialog",
-            response = AboutEntity.class,
-            authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-                @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-            }
-    )
-    @ApiResponses(
-            value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-            }
-    )
-    public Response getAboutInfo(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
-
-        // replicate if cluster manager
-        if (properties.isClusterManager()) {
-            return clusterManager.applyRequest(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).getResponse();
-        }
-
-        final ControllerConfigurationDTO controllerConfig = serviceFacade.getControllerConfiguration();
-
-        // create the about dto
-        final AboutDTO aboutDTO = new AboutDTO();
-        aboutDTO.setTitle(controllerConfig.getName());
-        aboutDTO.setVersion(properties.getUiTitle());
-
-        // create the revision
-        final RevisionDTO revision = new RevisionDTO();
-        revision.setClientId(clientId.getClientId());
-
-        // create the response entity
-        final AboutEntity entity = new AboutEntity();
-        entity.setRevision(revision);
-        entity.setAbout(aboutDTO);
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
+        // build the response
+        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
     }
 
     // setters
@@ -1229,12 +552,20 @@ public class ControllerResource extends ApplicationResource {
         this.serviceFacade = serviceFacade;
     }
 
-    public void setClusterManager(WebClusterManager clusterManager) {
-        this.clusterManager = clusterManager;
+    @Override
+    public void setClusterCoordinator(ClusterCoordinator clusterCoordinator) {
+        this.clusterCoordinator = clusterCoordinator;
     }
 
-    public void setProperties(NiFiProperties properties) {
-        this.properties = properties;
+    public void setReportingTaskResource(ReportingTaskResource reportingTaskResource) {
+        this.reportingTaskResource = reportingTaskResource;
     }
 
+    public void setControllerServiceResource(ControllerServiceResource controllerServiceResource) {
+        this.controllerServiceResource = controllerServiceResource;
+    }
+
+    public void setAuthorizer(Authorizer authorizer) {
+        this.authorizer = authorizer;
+    }
 }

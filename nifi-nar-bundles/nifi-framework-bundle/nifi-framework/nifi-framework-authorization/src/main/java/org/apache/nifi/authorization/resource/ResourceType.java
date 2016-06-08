@@ -20,11 +20,13 @@ public enum ResourceType {
     Processor("/processors"),
     InputPort("/input-ports"),
     OutputPort("/output-ports"),
+    Funnel("/funnel"),
     Connection("/connections"),
     ProcessGroup("/process-groups"),
     RemoteProcessGroup("/remote-process-groups"),
     Label("/labels"),
     ControllerService("/controller-services"),
+    ReportingTask("/reporting-tasks"),
     Template("/templates");
 
     final String value;

@@ -124,19 +124,6 @@ nf.Common = (function () {
         },
 
         /**
-         * Loads a script at the specified URL. Supports caching the script on the browser.
-         * 
-         * @param {string} url
-         */
-        cachedScript: function (url) {
-            return $.ajax({
-                dataType: 'script',
-                cache: true,
-                url: url
-            });
-        },
-
-        /**
          * Automatically refresh tokens by checking once an hour if its going to expire soon.
          */
         scheduleTokenRefresh: function () {
@@ -350,8 +337,8 @@ nf.Common = (function () {
                 return;
             }
 
-            // status code 400, 404, and 409 are expected response codes for common errors.
-            if (xhr.status === 400 || xhr.status === 404 || xhr.status === 409) {
+            // status code 400, 403, 404, and 409 are expected response codes for common errors.
+            if (xhr.status === 400 || xhr.status === 403 || xhr.status === 404 || xhr.status === 409) {
                 nf.Dialog.showOkDialog({
                     dialogContent: nf.Common.escapeHtml(xhr.responseText),
                     overlayBackground: false
@@ -373,14 +360,7 @@ nf.Common = (function () {
                 } else if (xhr.status === 401) {
                     $('#message-title').text('Unauthorized');
                     if ($.trim(xhr.responseText) === '') {
-                        $('#message-content').text('Authorization is required to use this NiFi.');
-                    } else {
-                        $('#message-content').text(xhr.responseText);
-                    }
-                } else if (xhr.status === 403) {
-                    $('#message-title').text('Access Denied');
-                    if ($.trim(xhr.responseText) === '') {
-                        $('#message-content').text('Unable to authorize you to use this NiFi.');
+                        $('#message-content').text('Authentication is required to use this NiFi.');
                     } else {
                         $('#message-content').text(xhr.responseText);
                     }
@@ -428,8 +408,7 @@ nf.Common = (function () {
                 nf.ContextMenu.hide();
 
                 // shut off the auto refresh
-                nf.Canvas.stopRevisionPolling();
-                nf.Canvas.stopStatusPolling();
+                nf.Canvas.stopPolling();
             }
         },
 
@@ -733,6 +712,43 @@ nf.Common = (function () {
                 }
             }
             return result;
+        },
+
+        /**
+         * Extracts the contents of the specified str after the strToFind. If the
+         * strToFind is not found or the last part of the str, an empty string is
+         * returned.
+         *
+         * @argument {string} str       The full string
+         * @argument {string} strToFind The substring to find
+         */
+        substringAfterFirst: function (str, strToFind) {
+            var result = '';
+            var indexOfStrToFind = str.indexOf(strToFind);
+            if (indexOfStrToFind >= 0) {
+                var indexAfterStrToFind = indexOfStrToFind + strToFind.length;
+                if (indexAfterStrToFind < str.length) {
+                    result = str.substr(indexAfterStrToFind);
+                }
+            }
+            return result;
+        },
+
+        /**
+         * Extracts the contents of the specified str before the strToFind. If the
+         * strToFind is not found or the first part of the str, an empty string is
+         * returned.
+         *
+         * @argument {string} str       The full string
+         * @argument {string} strToFind The substring to find
+         */
+        substringBeforeFirst: function(str, strToFind) {
+            var result = '';
+            var indexOfStrToFind = str.indexOf(strToFind);
+            if (indexOfStrToFind >= 0) {
+                result = str.substr(0, indexOfStrToFind);
+            }
+            return result
         },
 
         /**

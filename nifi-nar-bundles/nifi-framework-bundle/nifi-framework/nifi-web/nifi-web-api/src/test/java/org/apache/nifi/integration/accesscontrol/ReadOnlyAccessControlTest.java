@@ -17,9 +17,6 @@
 package org.apache.nifi.integration.accesscontrol;
 
 import com.sun.jersey.api.client.ClientResponse;
-import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
 import org.apache.nifi.integration.NiFiWebApiTest;
 import org.apache.nifi.integration.util.NiFiTestServer;
 import org.apache.nifi.integration.util.NiFiTestUser;
@@ -34,12 +31,11 @@ import org.apache.nifi.web.api.entity.BannerEntity;
 import org.apache.nifi.web.api.entity.ConnectionEntity;
 import org.apache.nifi.web.api.entity.ConnectionsEntity;
 import org.apache.nifi.web.api.entity.ControllerConfigurationEntity;
-import org.apache.nifi.web.api.entity.InputPortEntity;
 import org.apache.nifi.web.api.entity.InputPortsEntity;
 import org.apache.nifi.web.api.entity.LabelEntity;
 import org.apache.nifi.web.api.entity.LabelsEntity;
-import org.apache.nifi.web.api.entity.OutputPortEntity;
 import org.apache.nifi.web.api.entity.OutputPortsEntity;
+import org.apache.nifi.web.api.entity.PortEntity;
 import org.apache.nifi.web.api.entity.PrioritizerTypesEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupsEntity;
@@ -51,6 +47,10 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
+
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Access control test for a read only user.
@@ -125,7 +125,7 @@ public class ReadOnlyAccessControlTest {
         Assert.assertNotNull(processGroupEntity);
 
         // extract the process group dto
-        ProcessGroupDTO processGroupDTO = processGroupEntity.getProcessGroup();
+        ProcessGroupDTO processGroupDTO = processGroupEntity.getComponent();
         FlowSnippetDTO processGroupContentsDTO = processGroupDTO.getContents();
 
         // verify graph
@@ -180,7 +180,6 @@ public class ReadOnlyAccessControlTest {
         ControllerConfigurationEntity entity = response.getEntity(ControllerConfigurationEntity.class);
         Assert.assertNotNull(entity);
         Assert.assertNotNull(entity.getConfig());
-        Assert.assertEquals("NiFi Flow", entity.getConfig().getName());
         Assert.assertEquals(10, entity.getConfig().getMaxTimerDrivenThreadCount().intValue());
         Assert.assertEquals(5, entity.getConfig().getMaxEventDrivenThreadCount().intValue());
         Assert.assertEquals(30, entity.getConfig().getAutoRefreshIntervalSeconds().intValue());
@@ -625,7 +624,7 @@ public class ReadOnlyAccessControlTest {
         revision.setVersion(NiFiTestUser.REVISION);
 
         // create the entity body
-        InputPortEntity entity = new InputPortEntity();
+        PortEntity entity = new PortEntity();
         entity.setRevision(revision);
 
         // perform the request
@@ -650,7 +649,7 @@ public class ReadOnlyAccessControlTest {
         revision.setVersion(NiFiTestUser.REVISION);
 
         // create the entity body
-        InputPortEntity entity = new InputPortEntity();
+        PortEntity entity = new PortEntity();
         entity.setRevision(revision);
 
         // perform the request
@@ -715,7 +714,7 @@ public class ReadOnlyAccessControlTest {
         revision.setVersion(NiFiTestUser.REVISION);
 
         // create the entity body
-        OutputPortEntity entity = new OutputPortEntity();
+        PortEntity entity = new PortEntity();
         entity.setRevision(revision);
 
         // perform the request
@@ -740,7 +739,7 @@ public class ReadOnlyAccessControlTest {
         revision.setVersion(NiFiTestUser.REVISION);
 
         // create the entity body
-        OutputPortEntity entity = new OutputPortEntity();
+        PortEntity entity = new PortEntity();
         entity.setRevision(revision);
 
         // perform the request

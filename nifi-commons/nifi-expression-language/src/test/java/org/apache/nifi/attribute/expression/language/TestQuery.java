@@ -19,7 +19,13 @@ package org.apache.nifi.attribute.expression.language;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.MatcherAssert.assertThat;
 
+import java.io.BufferedInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Collections;
@@ -40,6 +46,7 @@ import org.antlr.runtime.tree.Tree;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
+
 import org.mockito.Mockito;
 
 public class TestQuery {
@@ -56,6 +63,7 @@ public class TestQuery {
         assertValid("${attr:toNumber():multiply(3)}");
         assertValid("${hostname()}");
         assertValid("${literal(3)}");
+        assertValid("${random()}");
         // left here because it's convenient for looking at the output
         //System.out.println(Query.compile("").evaluate(null));
     }
@@ -230,6 +238,34 @@ public class TestQuery {
 
         Query.validateExpression("${x:equals(\"${a}\")}", false);
         assertEquals("true", Query.evaluateExpressions("${x:equals(\"${a}\")}", attributes, null));
+    }
+
+    @Test
+    public void testJsonPath() throws IOException {
+        final Map<String, String> attributes = new HashMap<>();
+        attributes.put("json", getResourceAsString("/json/address-book.json"));
+        verifyEquals("${json:jsonPath('$.firstName')}", attributes, "John");
+        verifyEquals("${json:jsonPath('$.address.postalCode')}", attributes, "10021-3100");
+        verifyEquals("${json:jsonPath(\"$.phoneNumbers[?(@.type=='home')].number\")}", attributes, "212 555-1234");
+        verifyEquals("${json:jsonPath('$.phoneNumbers')}", attributes,
+                "[{\"type\":\"home\",\"number\":\"212 555-1234\"},{\"type\":\"office\",\"number\":\"646 555-4567\"}]");
+        verifyEquals("${json:jsonPath('$.missing-path')}", attributes, "");
+        try {
+            verifyEquals("${json:jsonPath('$..')}", attributes, "");
+            Assert.fail("Did not detect bad JSON path expression");
+        } catch (final AttributeExpressionLanguageException e) {
+        }
+        try {
+            verifyEquals("${missing:jsonPath('$.firstName')}", attributes, "");
+            Assert.fail("Did not detect empty JSON document");
+        } catch (AttributeExpressionLanguageException e) {
+        }
+        attributes.put("invalid", "[}");
+        try {
+            verifyEquals("${invlaid:jsonPath('$.firstName')}", attributes, "John");
+            Assert.fail("Did not detect invalid JSON document");
+        } catch (AttributeExpressionLanguageException e) {
+        }
     }
 
     @Test
@@ -1079,6 +1115,17 @@ public class TestQuery {
     }
 
     @Test
+    public void testIn() {
+        final Map<String, String> attributes = new HashMap<>();
+        attributes.put("myEnum", "JOHN");
+        verifyEquals("${ myEnum:in('PAUL', 'JOHN', 'MIKE') }", attributes, true);
+        verifyEquals("${ myEnum:in('RED', 'BLUE', 'GREEN') }", attributes, false);
+
+        attributes.put("toReplace", "BLUE");
+        verifyEquals("${ myEnum:in('RED', ${ toReplace:replace('BLUE', 'JOHN') }, 'GREEN') }", attributes, true);
+    }
+
+    @Test
     public void testSubjectAsEmbeddedExpressionWithSurroundChars() {
         final Map<String, String> attributes = new HashMap<>();
         attributes.put("b", "x");
@@ -1091,6 +1138,11 @@ public class TestQuery {
     @Test
     public void testToNumberFunctionReturnsNumberType() {
         assertEquals(ResultType.NUMBER, Query.getResultType("${header.size:toNumber()}"));
+    }
+
+    @Test
+    public void testRandomFunctionReturnsNumberType() {
+        assertEquals(ResultType.NUMBER, Query.getResultType("${random()}"));
     }
 
     @Test
@@ -1121,6 +1173,24 @@ public class TestQuery {
         final Map<String, String> attrs = Collections.<String, String> emptyMap();
         verifyEquals("${literal(2):gt(1)}", attrs, true);
         verifyEquals("${literal('hello'):substring(0, 1):equals('h')}", attrs, true);
+    }
+
+    @Test
+    public void testRandomFunction() {
+        final Map<String, String> attrs = Collections.<String, String> emptyMap();
+        final Long negOne = Long.valueOf(-1L);
+        final HashSet<Long> results = new HashSet<Long>(100);
+        for (int i = 0; i < results.size(); i++) {
+            long result = (Long) getResult("${random()}", attrs).getValue();
+            assertThat("random", result, greaterThan(negOne));
+            assertEquals("duplicate random", true, results.add(result));
+        }
+    }
+
+    QueryResult<?> getResult(String expr, Map<String, String> attrs) {
+        final Query query = Query.compile(expr);
+        final QueryResult<?> result = query.evaluate(attrs);
+        return result;
     }
 
     @Test
@@ -1243,5 +1313,24 @@ public class TestQuery {
         }
 
         assertEquals(expectedResult, result.getValue());
+    }
+
+    private String getResourceAsString(String resourceName) throws IOException {
+        try (final Reader reader = new InputStreamReader(new BufferedInputStream(getClass().getResourceAsStream(resourceName)))) {
+            int n = 0;
+            char[] buf = new char[1024];
+            StringBuilder sb = new StringBuilder();
+            while (n != -1) {
+                try {
+                    n = reader.read(buf, 0, buf.length);
+                } catch (IOException e) {
+                    throw new RuntimeException("failed to read resource", e);
+                }
+                if (n > 0) {
+                    sb.append(buf, 0, n);
+                }
+            }
+            return sb.toString();
+        }
     }
 }

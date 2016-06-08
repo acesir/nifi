@@ -16,37 +16,12 @@
  */
 package org.apache.nifi.web.api;
 
-import com.sun.jersey.api.core.ResourceContext;
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.cluster.manager.impl.WebClusterManager;
-import org.apache.nifi.cluster.node.Node;
-import org.apache.nifi.util.NiFiProperties;
-import org.apache.nifi.web.ConfigurationSnapshot;
-import org.apache.nifi.web.IllegalClusterResourceRequestException;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.api.dto.ClusterDTO;
-import org.apache.nifi.web.api.dto.NodeDTO;
-import org.apache.nifi.web.api.dto.ProcessorConfigDTO;
-import org.apache.nifi.web.api.dto.ProcessorDTO;
-import org.apache.nifi.web.api.dto.RevisionDTO;
-import org.apache.nifi.web.api.dto.search.NodeSearchResultDTO;
-import org.apache.nifi.web.api.entity.ClusterEntity;
-import org.apache.nifi.web.api.entity.ClusterSearchResultsEntity;
-import org.apache.nifi.web.api.entity.ProcessorEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
+import java.util.ArrayList;
+import java.util.List;
 
-import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
+import javax.ws.rs.DELETE;
 import javax.ws.rs.DefaultValue;
-import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
 import javax.ws.rs.HEAD;
 import javax.ws.rs.PUT;
@@ -57,8 +32,26 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import java.util.ArrayList;
-import java.util.List;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.cluster.coordination.node.NodeConnectionState;
+import org.apache.nifi.web.IllegalClusterResourceRequestException;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.api.dto.ClusterDTO;
+import org.apache.nifi.web.api.dto.NodeDTO;
+import org.apache.nifi.web.api.dto.search.NodeSearchResultDTO;
+import org.apache.nifi.web.api.entity.ClusterEntity;
+import org.apache.nifi.web.api.entity.ClusterSearchResultsEntity;
+import org.apache.nifi.web.api.entity.NodeEntity;
+
+import com.sun.jersey.api.core.ResourceContext;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+
 
 /**
  * RESTful endpoint for managing a cluster.
@@ -66,28 +59,13 @@ import java.util.List;
 @Path("/cluster")
 @Api(
         value = "/cluster",
-        description = "Provides access to the cluster of Nodes that comprise this NiFi"
+        description = "Endpoint for managing the cluster."
 )
 public class ClusterResource extends ApplicationResource {
 
     @Context
     private ResourceContext resourceContext;
     private NiFiServiceFacade serviceFacade;
-    private NiFiProperties properties;
-
-    /**
-     * Locates the ClusterConnection sub-resource.
-     *
-     * @return node resource
-     */
-    @Path("/nodes")
-    @ApiOperation(
-            value = "Gets the node resource",
-            response = NodeResource.class
-    )
-    public NodeResource getNodeResource() {
-        return resourceContext.getResource(NodeResource.class);
-    }
 
     /**
      * Returns a 200 OK response to indicate this is a valid cluster endpoint.
@@ -96,24 +74,23 @@ public class ClusterResource extends ApplicationResource {
      */
     @HEAD
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_XML, MediaType.APPLICATION_JSON})
+    @Produces(MediaType.WILDCARD)
     public Response getClusterHead() {
-        if (properties.isClusterManager()) {
+        if (isConnectedToCluster()) {
             return Response.ok().build();
         } else {
-            return Response.status(Response.Status.NOT_FOUND).entity("Only a cluster manager can process the request.").build();
+            return Response.status(Response.Status.NOT_FOUND).entity("NiFi instance is not clustered").build();
         }
     }
 
     /**
      * Gets the contents of this NiFi cluster. This includes all nodes and their status.
      *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
      * @return A clusterEntity
      */
     @GET
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_XML, MediaType.APPLICATION_JSON})
+    @Produces(MediaType.APPLICATION_JSON)
     // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
     @ApiOperation(
             value = "Gets the contents of the cluster",
@@ -133,31 +110,20 @@ public class ClusterResource extends ApplicationResource {
                 @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response getCluster(
-            @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
+    public Response getCluster() {
 
-        if (properties.isClusterManager()) {
-
+        if (isConnectedToCluster()) {
             final ClusterDTO dto = serviceFacade.getCluster();
-
-            // create the revision
-            RevisionDTO revision = new RevisionDTO();
-            revision.setClientId(clientId.getClientId());
 
             // create entity
             final ClusterEntity entity = new ClusterEntity();
             entity.setCluster(dto);
-            entity.setRevision(revision);
 
             // generate the response
             return generateOkResponse(entity).build();
         }
 
-        throw new IllegalClusterResourceRequestException("Only a cluster manager can process the request.");
+        throw new IllegalClusterResourceRequestException("Only a node connected to a cluster can process the request.");
     }
 
     /**
@@ -168,7 +134,7 @@ public class ClusterResource extends ApplicationResource {
      */
     @GET
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_XML, MediaType.APPLICATION_JSON})
+    @Produces(MediaType.APPLICATION_JSON)
     @Path("/search-results")
     // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
     @ApiOperation(
@@ -197,7 +163,7 @@ public class ClusterResource extends ApplicationResource {
             @QueryParam("q") @DefaultValue(StringUtils.EMPTY) String value) {
 
         // ensure this is the cluster manager
-        if (properties.isClusterManager()) {
+        if (isConnectedToCluster()) {
             final List<NodeSearchResultDTO> nodeMatches = new ArrayList<>();
 
             // get the nodes in the cluster
@@ -206,7 +172,7 @@ public class ClusterResource extends ApplicationResource {
             // check each to see if it matches the search term
             for (NodeDTO node : cluster.getNodes()) {
                 // ensure the node is connected
-                if (!Node.Status.CONNECTED.toString().equals(node.getStatus())) {
+                if (!NodeConnectionState.CONNECTED.name().equals(node.getStatus())) {
                     continue;
                 }
 
@@ -230,228 +196,162 @@ public class ClusterResource extends ApplicationResource {
             return noCache(Response.ok(results)).build();
         }
 
-        throw new IllegalClusterResourceRequestException("Only a cluster manager can process the request.");
+        throw new IllegalClusterResourceRequestException("Only a node connected to a cluster can process the request.");
     }
 
     /**
-     * Gets the processor.
+     * Gets the contents of the specified node in this NiFi cluster.
      *
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param id The id of the processor
-     * @return A processorEntity
+     * @param id The node id.
+     * @return A nodeEntity.
      */
     @GET
     @Consumes(MediaType.WILDCARD)
-    @Produces({MediaType.APPLICATION_XML, MediaType.APPLICATION_JSON})
-    @Path("/processors/{id}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("nodes/{id}")
     // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
     @ApiOperation(
-            value = "Gets the specified processor",
-            response = ProcessorEntity.class,
+            value = "Gets a node in the cluster",
+            response = NodeEntity.class,
             authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "DFM", type = "ROLE_DFM"),
-                @Authorization(value = "Admin", type = "ROLE_ADMIN")
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
             }
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response getProcessor(
+    public Response getNode(
             @ApiParam(
-                    value = "If the client id is not specified, new one will be generated. This value (whether specified or generated) is included in the response.",
-                    required = false
-            )
-            @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @ApiParam(
-                    value = "The processor id.",
+                    value = "The node id.",
                     required = true
             )
             @PathParam("id") String id) {
 
-        if (!properties.isClusterManager()) {
+        // get the specified relationship
+        final NodeDTO dto = serviceFacade.getNode(id);
 
-            final ProcessorDTO dto = serviceFacade.getProcessor(id);
+        // create the response entity
+        final NodeEntity entity = new NodeEntity();
+        entity.setNode(dto);
 
-            // create the revision
-            RevisionDTO revision = new RevisionDTO();
-            revision.setClientId(clientId.getClientId());
-
-            // create entity
-            final ProcessorEntity entity = new ProcessorEntity();
-            entity.setProcessor(dto);
-            entity.setRevision(revision);
-
-            // generate the response
-            return generateOkResponse(entity).build();
-        }
-
-        throw new IllegalClusterResourceRequestException("Only a node can process the request.");
+        // generate the response
+        return generateOkResponse(entity).build();
     }
 
     /**
-     * Updates the processors annotation data.
+     * Updates the contents of the specified node in this NiFi cluster.
      *
-     * @param httpServletRequest request
-     * @param version The revision is used to verify the client is working with the latest version of the flow.
-     * @param clientId Optional client id. If the client id is not specified, a new one will be generated. This value (whether specified or generated) is included in the response.
-     * @param processorId The id of the processor.
-     * @param annotationData The annotation data to set.
-     * @return A processorEntity.
+     * @param id The id of the node
+     * @param nodeEntity A nodeEntity
+     * @return A nodeEntity
      */
     @PUT
-    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
-    @Produces({MediaType.APPLICATION_XML, MediaType.APPLICATION_JSON})
-    @Path("/processors/{id}")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_DFM')")
-    public Response updateProcessor(
-            @Context HttpServletRequest httpServletRequest,
-            @FormParam(VERSION) LongParameter version,
-            @FormParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId,
-            @PathParam("id") String processorId,
-            @FormParam("annotationData") String annotationData) {
-
-        if (!properties.isClusterManager()) {
-
-            // create the processor configuration with the given annotation data
-            ProcessorConfigDTO configDto = new ProcessorConfigDTO();
-            configDto.setAnnotationData(annotationData);
-
-            // create the processor dto
-            ProcessorDTO processorDto = new ProcessorDTO();
-            processorDto.setId(processorId);
-            processorDto.setConfig(configDto);
-
-            // create the revision
-            RevisionDTO revision = new RevisionDTO();
-            revision.setClientId(clientId.getClientId());
-
-            if (version != null) {
-                revision.setVersion(version.getLong());
-            }
-
-            // create the processor entity
-            ProcessorEntity processorEntity = new ProcessorEntity();
-            processorEntity.setRevision(revision);
-            processorEntity.setProcessor(processorDto);
-
-            return updateProcessor(httpServletRequest, processorId, processorEntity);
-        }
-
-        throw new IllegalClusterResourceRequestException("Only a node can process the request.");
-    }
-
-    /**
-     * Updates the processors annotation data.
-     *
-     * @param httpServletRequest request
-     * @param processorId The id of the processor.
-     * @param processorEntity A processorEntity.
-     * @return A processorEntity.
-     */
-    @PUT
-    @Consumes({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    @Produces({MediaType.APPLICATION_XML, MediaType.APPLICATION_JSON})
-    @Path("/processors/{id}")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_DFM')")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("nodes/{id}")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_ADMIN')")
     @ApiOperation(
-            value = "Updates processor annotation data",
-            response = ProcessorEntity.class,
+            value = "Updates a node in the cluster",
+            response = NodeEntity.class,
             authorizations = {
-                @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-                @Authorization(value = "DFM", type = "ROLE_DFM"),
-                @Authorization(value = "Admin", type = "ROLE_ADMIN")
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
             }
     )
     @ApiResponses(
             value = {
-                @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-                @ApiResponse(code = 401, message = "Client could not be authenticated."),
-                @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-                @ApiResponse(code = 404, message = "The specified resource could not be found."),
-                @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response updateProcessor(
-            @Context HttpServletRequest httpServletRequest,
+    public Response updateNode(
             @ApiParam(
-                    value = "The processor id.",
+                    value = "The node id.",
                     required = true
             )
-            @PathParam("id") final String processorId,
+            @PathParam("id") String id,
             @ApiParam(
-                    value = "The processor configuration details. The only configuration that will be honored at this endpoint is the processor annontation data.",
+                    value = "The node configuration. The only configuration that will be honored at this endpoint is the status or primary flag.",
                     required = true
-            )
-            final ProcessorEntity processorEntity) {
+            ) NodeEntity nodeEntity) {
 
-        if (!properties.isClusterManager()) {
-
-            if (processorEntity == null || processorEntity.getProcessor() == null) {
-                throw new IllegalArgumentException("Processor details must be specified.");
-            }
-
-            if (processorEntity.getRevision() == null) {
-                throw new IllegalArgumentException("Revision must be specified.");
-            }
-
-            // ensure the same id is being used
-            ProcessorDTO requestProcessorDTO = processorEntity.getProcessor();
-            if (!processorId.equals(requestProcessorDTO.getId())) {
-                throw new IllegalArgumentException(String.format("The processor id (%s) in the request body does "
-                        + "not equal the processor id of the requested resource (%s).", requestProcessorDTO.getId(), processorId));
-            }
-
-            // get the processor configuration
-            ProcessorConfigDTO config = requestProcessorDTO.getConfig();
-            if (config == null) {
-                throw new IllegalArgumentException("Processor configuration must be specified.");
-            }
-
-            // handle expects request (usually from the cluster manager)
-            final String expects = httpServletRequest.getHeader(WebClusterManager.NCM_EXPECTS_HTTP_HEADER);
-            if (expects != null) {
-                serviceFacade.verifyUpdateProcessor(requestProcessorDTO);
-                return generateContinueResponse().build();
-            }
-
-            // update the processor
-            final RevisionDTO revision = processorEntity.getRevision();
-            final ConfigurationSnapshot<ProcessorDTO> controllerResponse = serviceFacade.setProcessorAnnotationData(
-                    new Revision(revision.getVersion(), revision.getClientId()), processorId, config.getAnnotationData());
-
-            // get the processor dto
-            final ProcessorDTO responseProcessorDTO = controllerResponse.getConfiguration();
-
-            // update the revision
-            RevisionDTO updatedRevision = new RevisionDTO();
-            updatedRevision.setClientId(revision.getClientId());
-            updatedRevision.setVersion(controllerResponse.getVersion());
-
-            // generate the response entity
-            final ProcessorEntity entity = new ProcessorEntity();
-            entity.setRevision(updatedRevision);
-            entity.setProcessor(responseProcessorDTO);
-
-            return generateOkResponse(entity).build();
+        if (nodeEntity == null || nodeEntity.getNode() == null) {
+            throw new IllegalArgumentException("Node details must be specified.");
         }
 
-        throw new IllegalClusterResourceRequestException("Only a node can process the request.");
+        // get the request node
+        final NodeDTO requestNodeDTO = nodeEntity.getNode();
+        if (!id.equals(requestNodeDTO.getNodeId())) {
+            throw new IllegalArgumentException(String.format("The node id (%s) in the request body does "
+                + "not equal the node id of the requested resource (%s).", requestNodeDTO.getNodeId(), id));
+        }
+
+        // update the node
+        final NodeDTO node = serviceFacade.updateNode(requestNodeDTO);
+
+        // create the response entity
+        NodeEntity entity = new NodeEntity();
+        entity.setNode(node);
+
+        // generate the response
+        return generateOkResponse(entity).build();
+    }
+
+    /**
+     * Removes the specified from this NiFi cluster.
+     *
+     * @param id The id of the node
+     * @return A nodeEntity
+     */
+    @DELETE
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("nodes/{id}")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Removes a node from the cluster",
+            response = NodeEntity.class,
+            authorizations = {
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response deleteNode(
+            @ApiParam(
+                    value = "The node id.",
+                    required = true
+            )
+            @PathParam("id") String id) {
+
+        serviceFacade.deleteNode(id);
+
+        // create the response entity
+        final NodeEntity entity = new NodeEntity();
+
+        // generate the response
+        return generateOkResponse(entity).build();
     }
 
     // setters
     public void setServiceFacade(NiFiServiceFacade serviceFacade) {
         this.serviceFacade = serviceFacade;
     }
-
-    public void setProperties(NiFiProperties properties) {
-        this.properties = properties;
-    }
-
 }

@@ -16,10 +16,39 @@
  */
 package org.apache.nifi.web.controller;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.text.Collator;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.SortedSet;
+import java.util.TimeZone;
+import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
+
+import javax.ws.rs.WebApplicationException;
+
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.ClassUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.admin.service.KeyService;
+import org.apache.nifi.authorization.Resource;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.resource.ResourceFactory;
+import org.apache.nifi.authorization.resource.ResourceType;
+import org.apache.nifi.authorization.user.NiFiUser;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.cluster.coordination.ClusterCoordinator;
+import org.apache.nifi.cluster.coordination.node.NodeConnectionState;
 import org.apache.nifi.cluster.protocol.NodeIdentifier;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.connectable.Connectable;
@@ -31,11 +60,15 @@ import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.Counter;
 import org.apache.nifi.controller.FlowController;
 import org.apache.nifi.controller.ProcessorNode;
+import org.apache.nifi.controller.ReportingTaskNode;
 import org.apache.nifi.controller.ScheduledState;
+import org.apache.nifi.controller.Template;
+import org.apache.nifi.controller.label.Label;
 import org.apache.nifi.controller.queue.FlowFileQueue;
 import org.apache.nifi.controller.queue.QueueSize;
 import org.apache.nifi.controller.repository.ContentNotFoundException;
 import org.apache.nifi.controller.repository.claim.ContentDirection;
+import org.apache.nifi.controller.service.ControllerServiceNode;
 import org.apache.nifi.controller.status.ConnectionStatus;
 import org.apache.nifi.controller.status.PortStatus;
 import org.apache.nifi.controller.status.ProcessGroupStatus;
@@ -72,7 +105,6 @@ import org.apache.nifi.search.SearchContext;
 import org.apache.nifi.search.SearchResult;
 import org.apache.nifi.search.Searchable;
 import org.apache.nifi.services.FlowService;
-import org.apache.nifi.user.NiFiUser;
 import org.apache.nifi.util.FormatUtils;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.web.DownloadableContent;
@@ -80,6 +112,7 @@ import org.apache.nifi.web.NiFiCoreException;
 import org.apache.nifi.web.ResourceNotFoundException;
 import org.apache.nifi.web.api.dto.DocumentedTypeDTO;
 import org.apache.nifi.web.api.dto.DtoFactory;
+import org.apache.nifi.web.api.dto.TemplateDTO;
 import org.apache.nifi.web.api.dto.provenance.AttributeDTO;
 import org.apache.nifi.web.api.dto.provenance.ProvenanceDTO;
 import org.apache.nifi.web.api.dto.provenance.ProvenanceEventDTO;
@@ -92,39 +125,13 @@ import org.apache.nifi.web.api.dto.provenance.lineage.LineageRequestDTO;
 import org.apache.nifi.web.api.dto.provenance.lineage.LineageRequestDTO.LineageRequestType;
 import org.apache.nifi.web.api.dto.search.ComponentSearchResultDTO;
 import org.apache.nifi.web.api.dto.search.SearchResultsDTO;
-import org.apache.nifi.web.api.dto.status.ConnectionStatusDTO;
 import org.apache.nifi.web.api.dto.status.ControllerStatusDTO;
-import org.apache.nifi.web.api.dto.status.PortStatusDTO;
-import org.apache.nifi.web.api.dto.status.ProcessGroupStatusDTO;
-import org.apache.nifi.web.api.dto.status.ProcessorStatusDTO;
-import org.apache.nifi.web.api.dto.status.RemoteProcessGroupStatusDTO;
 import org.apache.nifi.web.api.dto.status.StatusHistoryDTO;
 import org.apache.nifi.web.security.ProxiedEntitiesUtils;
-import org.apache.nifi.web.security.user.NiFiUserUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.ws.rs.WebApplicationException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.text.Collator;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.SortedSet;
-import java.util.TimeZone;
-import java.util.TreeSet;
-import java.util.concurrent.TimeUnit;
-
-public class ControllerFacade {
+public class ControllerFacade implements Authorizable {
 
     private static final Logger logger = LoggerFactory.getLogger(ControllerFacade.class);
 
@@ -132,6 +139,7 @@ public class ControllerFacade {
     private FlowController flowController;
     private FlowService flowService;
     private KeyService keyService;
+    private ClusterCoordinator clusterCoordinator;
 
     // properties
     private NiFiProperties properties;
@@ -139,9 +147,11 @@ public class ControllerFacade {
 
     /**
      * Creates an archive of the current flow.
+     *
+     * @throws IOException if unable to save a copy of the flow
      */
-    public void createArchive() {
-        flowService.saveFlowChanges(TimeUnit.SECONDS, 0, true);
+    public void createArchive() throws IOException {
+        flowService.archiveFlow();
     }
 
     /**
@@ -167,6 +177,16 @@ public class ControllerFacade {
      */
     public void setName(String name) {
         flowController.setName(name);
+    }
+
+    @Override
+    public Authorizable getParentAuthorizable() {
+        return flowController.getParentAuthorizable();
+    }
+
+    @Override
+    public Resource getResource() {
+        return flowController.getResource();
     }
 
     /**
@@ -445,6 +465,20 @@ public class ControllerFacade {
         controllerStatus.setBytesQueued(controllerQueueSize.getByteCount());
         controllerStatus.setFlowFilesQueued(controllerQueueSize.getObjectCount());
 
+        if (clusterCoordinator != null && clusterCoordinator.isConnected()) {
+            final Map<NodeConnectionState, List<NodeIdentifier>> stateMap = clusterCoordinator.getConnectionStates();
+            int totalNodeCount = 0;
+            for (final List<NodeIdentifier> nodeList : stateMap.values()) {
+                totalNodeCount += nodeList.size();
+            }
+            final List<NodeIdentifier> connectedNodeIds = stateMap.get(NodeConnectionState.CONNECTED);
+            final int connectedNodeCount = (connectedNodeIds == null) ? 0 : connectedNodeIds.size();
+
+            controllerStatus.setConnectedNodeCount(connectedNodeCount);
+            controllerStatus.setTotalNodeCount(totalNodeCount);
+            controllerStatus.setConnectedNodes(connectedNodeCount + " / " + totalNodeCount);
+        }
+
         final BulletinRepository bulletinRepository = getBulletinRepository();
         controllerStatus.setBulletins(dtoFactory.createBulletinDtos(bulletinRepository.findBulletinsForController()));
 
@@ -473,12 +507,12 @@ public class ControllerFacade {
      * @param groupId group id
      * @return the status for the specified process group
      */
-    public ProcessGroupStatusDTO getProcessGroupStatus(final String groupId) {
+    public ProcessGroupStatus getProcessGroupStatus(final String groupId) {
         final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
         if (processGroupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
-        return dtoFactory.createProcessGroupStatusDto(flowController.getBulletinRepository(), processGroupStatus);
+        return processGroupStatus;
     }
 
     /**
@@ -487,7 +521,7 @@ public class ControllerFacade {
      * @param processorId processor id
      * @return the status for the specified processor
      */
-    public ProcessorStatusDTO getProcessorStatus(final String processorId) {
+    public ProcessorStatus getProcessorStatus(final String processorId) {
         final ProcessGroup root = flowController.getGroup(flowController.getRootGroupId());
         final ProcessorNode processor = root.findProcessor(processorId);
 
@@ -503,13 +537,12 @@ public class ControllerFacade {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
 
-        for (final ProcessorStatus processorStatus : processGroupStatus.getProcessorStatus()) {
-            if (processorId.equals(processorStatus.getId())) {
-                return dtoFactory.createProcessorStatusDto(processorStatus);
-            }
+        final ProcessorStatus status = processGroupStatus.getProcessorStatus().stream().filter(processorStatus -> processorId.equals(processorStatus.getId())).findFirst().orElse(null);
+        if (status == null) {
+            throw new ResourceNotFoundException(String.format("Unable to locate processor with id '%s'.", processorId));
         }
 
-        throw new ResourceNotFoundException(String.format("Unable to locate processor with id '%s'.", processorId));
+        return status;
     }
 
     /**
@@ -518,7 +551,7 @@ public class ControllerFacade {
      * @param connectionId connection id
      * @return the status for the specified connection
      */
-    public ConnectionStatusDTO getConnectionStatus(final String connectionId) {
+    public ConnectionStatus getConnectionStatus(final String connectionId) {
         final ProcessGroup root = flowController.getGroup(flowController.getRootGroupId());
         final Connection connection = root.findConnection(connectionId);
 
@@ -534,13 +567,12 @@ public class ControllerFacade {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
 
-        for (final ConnectionStatus connectionStatus : processGroupStatus.getConnectionStatus()) {
-            if (connectionId.equals(connectionStatus.getId())) {
-                return dtoFactory.createConnectionStatusDto(connectionStatus);
-            }
+        final ConnectionStatus status = processGroupStatus.getConnectionStatus().stream().filter(connectionStatus -> connectionId.equals(connectionStatus.getId())).findFirst().orElse(null);
+        if (status == null) {
+            throw new ResourceNotFoundException(String.format("Unable to locate connection with id '%s'.", connectionId));
         }
 
-        throw new ResourceNotFoundException(String.format("Unable to locate connection with id '%s'.", connectionId));
+        return status;
     }
 
     /**
@@ -549,7 +581,7 @@ public class ControllerFacade {
      * @param portId input port id
      * @return the status for the specified input port
      */
-    public PortStatusDTO getInputPortStatus(final String portId) {
+    public PortStatus getInputPortStatus(final String portId) {
         final ProcessGroup root = flowController.getGroup(flowController.getRootGroupId());
         final Port port = root.findInputPort(portId);
 
@@ -564,13 +596,12 @@ public class ControllerFacade {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
 
-        for (final PortStatus portStatus : processGroupStatus.getInputPortStatus()) {
-            if (portId.equals(portStatus.getId())) {
-                return dtoFactory.createPortStatusDto(portStatus);
-            }
+        final PortStatus status = processGroupStatus.getInputPortStatus().stream().filter(portStatus -> portId.equals(portStatus.getId())).findFirst().orElse(null);
+        if (status == null) {
+            throw new ResourceNotFoundException(String.format("Unable to locate input port with id '%s'.", portId));
         }
 
-        throw new ResourceNotFoundException(String.format("Unable to locate input port with id '%s'.", portId));
+        return status;
     }
 
     /**
@@ -579,7 +610,7 @@ public class ControllerFacade {
      * @param portId output port id
      * @return the status for the specified output port
      */
-    public PortStatusDTO getOutputPortStatus(final String portId) {
+    public PortStatus getOutputPortStatus(final String portId) {
         final ProcessGroup root = flowController.getGroup(flowController.getRootGroupId());
         final Port port = root.findOutputPort(portId);
 
@@ -594,13 +625,12 @@ public class ControllerFacade {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
 
-        for (final PortStatus portStatus : processGroupStatus.getOutputPortStatus()) {
-            if (portId.equals(portStatus.getId())) {
-                return dtoFactory.createPortStatusDto(portStatus);
-            }
+        final PortStatus status = processGroupStatus.getOutputPortStatus().stream().filter(portStatus -> portId.equals(portStatus.getId())).findFirst().orElse(null);
+        if (status == null) {
+            throw new ResourceNotFoundException(String.format("Unable to locate output port with id '%s'.", portId));
         }
 
-        throw new ResourceNotFoundException(String.format("Unable to locate output port with id '%s'.", portId));
+        return status;
     }
 
     /**
@@ -609,7 +639,7 @@ public class ControllerFacade {
      * @param remoteProcessGroupId remote process group id
      * @return the status for the specified remote process group
      */
-    public RemoteProcessGroupStatusDTO getRemoteProcessGroupStatus(final String remoteProcessGroupId) {
+    public RemoteProcessGroupStatus getRemoteProcessGroupStatus(final String remoteProcessGroupId) {
         final ProcessGroup root = flowController.getGroup(flowController.getRootGroupId());
         final RemoteProcessGroup remoteProcessGroup = root.findRemoteProcessGroup(remoteProcessGroupId);
 
@@ -619,18 +649,17 @@ public class ControllerFacade {
         }
 
         final String groupId = remoteProcessGroup.getProcessGroup().getIdentifier();
-        final ProcessGroupStatus processGroupStatus = flowController.getGroupStatus(groupId);
-        if (processGroupStatus == null) {
+        final ProcessGroupStatus groupStatus = flowController.getGroupStatus(groupId);
+        if (groupStatus == null) {
             throw new ResourceNotFoundException(String.format("Unable to locate group with id '%s'.", groupId));
         }
 
-        for (final RemoteProcessGroupStatus remoteProcessGroupStatus : processGroupStatus.getRemoteProcessGroupStatus()) {
-            if (remoteProcessGroupId.equals(remoteProcessGroupStatus.getId())) {
-                return dtoFactory.createRemoteProcessGroupStatusDto(remoteProcessGroupStatus);
-            }
+        final RemoteProcessGroupStatus status = groupStatus.getRemoteProcessGroupStatus().stream().filter(rpgStatus -> remoteProcessGroupId.equals(rpgStatus.getId())).findFirst().orElse(null);
+        if (status == null) {
+            throw new ResourceNotFoundException(String.format("Unable to locate remote process group with id '%s'.", remoteProcessGroupId));
         }
 
-        throw new ResourceNotFoundException(String.format("Unable to locate remote process group with id '%s'.", remoteProcessGroupId));
+        return status;
     }
 
     /**
@@ -704,6 +733,79 @@ public class ControllerFacade {
      */
     public SystemDiagnostics getSystemDiagnostics() {
         return flowController.getSystemDiagnostics();
+    }
+
+    public List<Resource> getResources() {
+        final List<Resource> resources = new ArrayList<>();
+        resources.add(ResourceFactory.getSystemResource());
+        resources.add(ResourceFactory.getControllerResource());
+        resources.add(ResourceFactory.getFlowResource());
+        resources.add(ResourceFactory.getProvenanceResource());
+        resources.add(ResourceFactory.getProxyResource());
+        resources.add(ResourceFactory.getResourceResource());
+
+        final ProcessGroup root = flowController.getGroup(flowController.getRootGroupId());
+
+        // add each processor
+        for (final ProcessorNode processor : root.findAllProcessors()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.Processor, processor.getIdentifier(), processor.getName()));
+            resources.add(ResourceFactory.getComponentProvenanceResource(ResourceType.Processor, processor.getIdentifier(), processor.getName()));
+        }
+
+        // add each connection
+        for (final Connection connection : root.findAllConnections()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.Connection, connection.getIdentifier(), connection.getName()));
+            resources.add(ResourceFactory.getFlowFileQueueResource(connection.getIdentifier(), connection.getName()));
+        }
+
+        // add each label
+        for (final Label label : root.findAllLabels()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.Label, label.getIdentifier(), label.getValue()));
+        }
+
+        // add each process group
+        for (final ProcessGroup processGroup : root.findAllProcessGroups()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.ProcessGroup, processGroup.getIdentifier(), processGroup.getName()));
+            resources.add(ResourceFactory.getComponentProvenanceResource(ResourceType.ProcessGroup, processGroup.getIdentifier(), processGroup.getName()));
+        }
+
+        // add each remote process group
+        for (final RemoteProcessGroup remoteProcessGroup : root.findAllRemoteProcessGroups()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.RemoteProcessGroup, remoteProcessGroup.getIdentifier(), remoteProcessGroup.getName()));
+            resources.add(ResourceFactory.getComponentProvenanceResource(ResourceType.RemoteProcessGroup, remoteProcessGroup.getIdentifier(), remoteProcessGroup.getName()));
+        }
+
+        // add each input port
+        for (final Port inputPort : root.findAllInputPorts()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.InputPort, inputPort.getIdentifier(), inputPort.getName()));
+            resources.add(ResourceFactory.getComponentProvenanceResource(ResourceType.InputPort, inputPort.getIdentifier(), inputPort.getName()));
+        }
+
+        // add each output port
+        for (final Port outputPort : root.findAllOutputPorts()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.OutputPort, outputPort.getIdentifier(), outputPort.getName()));
+            resources.add(ResourceFactory.getComponentProvenanceResource(ResourceType.OutputPort, outputPort.getIdentifier(), outputPort.getName()));
+        }
+
+        // add each controller service
+        for (final ControllerServiceNode controllerService : flowController.getAllControllerServices()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.ControllerService, controllerService.getIdentifier(), controllerService.getName()));
+        }
+
+        // add each reporting task
+        for (final ReportingTaskNode reportingTask : flowController.getAllReportingTasks()) {
+            resources.add(ResourceFactory.getComponentResource(ResourceType.ReportingTask, reportingTask.getIdentifier(), reportingTask.getName()));
+        }
+
+        // add each template
+        for (final Template template : root.findAllTemplates()) {
+            final TemplateDTO details = template.getDetails();
+            resources.add(ResourceFactory.getComponentResource(ResourceType.Template, details.getId(), details.getName()));
+        }
+
+        // TODO - need token resource?
+        // resources.add(ResourceFactory.getTokenResource());
+        return resources;
     }
 
     /**
@@ -1573,5 +1675,9 @@ public class ControllerFacade {
 
     public void setDtoFactory(DtoFactory dtoFactory) {
         this.dtoFactory = dtoFactory;
+    }
+
+    public void setClusterCoordinator(ClusterCoordinator clusterCoordinator) {
+        this.clusterCoordinator = clusterCoordinator;
     }
 }

@@ -29,9 +29,9 @@ nf.History = (function () {
      */
     var config = {
         urls: {
-            banners: '../nifi-api/controller/banners',
-            controllerAbout: '../nifi-api/controller/about',
-            authorities: '../nifi-api/controller/authorities'
+            banners: '../nifi-api/flow/banners',
+            about: '../nifi-api/flow/about',
+            authorities: '../nifi-api/flow/authorities'
         }
     };
 
@@ -142,7 +142,7 @@ nf.History = (function () {
                     // get the about details
                     $.ajax({
                         type: 'GET',
-                        url: config.urls.controllerAbout,
+                        url: config.urls.about,
                         dataType: 'json'
                     }).done(function (response) {
                         var aboutDetails = response.about;

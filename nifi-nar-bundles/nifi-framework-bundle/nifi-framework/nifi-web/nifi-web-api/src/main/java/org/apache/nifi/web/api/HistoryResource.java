@@ -16,6 +16,7 @@
  */
 package org.apache.nifi.web.api;
 
+import com.wordnik.swagger.annotations.Api;
 import com.wordnik.swagger.annotations.ApiOperation;
 import com.wordnik.swagger.annotations.ApiParam;
 import com.wordnik.swagger.annotations.ApiResponse;
@@ -48,7 +49,11 @@ import javax.ws.rs.core.Response;
 /**
  * RESTful endpoint for querying the history of this Controller.
  */
-@Path("history")
+@Path("/history")
+@Api(
+    value = "/history",
+    description = "Endpoint for accessing flow history."
+)
 public class HistoryResource extends ApplicationResource {
 
     private NiFiServiceFacade serviceFacade;
@@ -214,7 +219,6 @@ public class HistoryResource extends ApplicationResource {
 
         // create the response entity
         final HistoryEntity entity = new HistoryEntity();
-        entity.setRevision(revision);
         entity.setHistory(history);
 
         // generate the response
@@ -279,7 +283,6 @@ public class HistoryResource extends ApplicationResource {
 
         // create the response entity
         final ActionEntity entity = new ActionEntity();
-        entity.setRevision(revision);
         entity.setAction(action);
 
         // generate the response
@@ -341,7 +344,6 @@ public class HistoryResource extends ApplicationResource {
 
         // create the response entity
         final HistoryEntity entity = new HistoryEntity();
-        entity.setRevision(revision);
 
         // generate the response
         return generateOkResponse(entity).build();
@@ -397,7 +399,6 @@ public class HistoryResource extends ApplicationResource {
 
         // create the response entity
         final ComponentHistoryEntity entity = new ComponentHistoryEntity();
-        entity.setRevision(revision);
         entity.setComponentHistory(serviceFacade.getComponentHistory(processorId));
 
         // generate the response
@@ -454,7 +455,6 @@ public class HistoryResource extends ApplicationResource {
 
         // create the response entity
         final ComponentHistoryEntity entity = new ComponentHistoryEntity();
-        entity.setRevision(revision);
         entity.setComponentHistory(serviceFacade.getComponentHistory(controllerServiceId));
 
         // generate the response
@@ -511,7 +511,6 @@ public class HistoryResource extends ApplicationResource {
 
         // create the response entity
         final ComponentHistoryEntity entity = new ComponentHistoryEntity();
-        entity.setRevision(revision);
         entity.setComponentHistory(serviceFacade.getComponentHistory(reportingTaskId));
 
         // generate the response

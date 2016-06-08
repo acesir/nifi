@@ -25,7 +25,6 @@ public class HeartbeatAdapter extends XmlAdapter<AdaptedHeartbeat, Heartbeat> {
 
     @Override
     public AdaptedHeartbeat marshal(final Heartbeat hb) {
-
         final AdaptedHeartbeat aHb = new AdaptedHeartbeat();
 
         if (hb != null) {
@@ -36,10 +35,10 @@ public class HeartbeatAdapter extends XmlAdapter<AdaptedHeartbeat, Heartbeat> {
             aHb.setPayload(hb.getPayload());
 
             // set leader flag
-            aHb.setPrimary(hb.isPrimary());
+            aHb.setRoles(hb.getRoles());
 
             // set connected flag
-            aHb.setConnected(hb.isConnected());
+            aHb.setConnectionStatus(hb.getConnectionStatus());
         }
 
         return aHb;
@@ -47,7 +46,7 @@ public class HeartbeatAdapter extends XmlAdapter<AdaptedHeartbeat, Heartbeat> {
 
     @Override
     public Heartbeat unmarshal(final AdaptedHeartbeat aHb) {
-        return new Heartbeat(aHb.getNodeIdentifier(), aHb.isPrimary(), aHb.isConnected(), aHb.getPayload());
+        return new Heartbeat(aHb.getNodeIdentifier(), aHb.getRoles(), aHb.getConnectionStatus(), aHb.getPayload());
     }
 
 }

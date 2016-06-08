@@ -56,7 +56,6 @@
                     }
                 });
 
-                var url = $$('#requestUrl').text();
                 var ref = $$('#ref').text();
                 
                 // create the parameters
@@ -101,9 +100,9 @@
                         // if the selection has changesd, reload the page
                         if (currentLocation !== option.value) {
                             // get an access token if necessary
-                            var getAccessToken = $.Deferred(function (deferred) {
+                            var getAccessToken = $$.Deferred(function (deferred) {
                                 if (nf.Storage.hasItem('jwt')) {
-                                    $.ajax({
+                                    $$.ajax({
                                         type: 'POST',
                                         url: '../nifi-api/access/ui-extension-token'
                                     }).done(function (token) {
@@ -129,6 +128,7 @@
                                     contentParameter['access_token'] = uiExtensionToken;
                                 }
 
+                                var url = window.location.origin + window.location.pathname;
                                 window.location.href = url + '?' + $$.param($$.extend(contentParameter, params));
                             });
                         }
@@ -141,7 +141,6 @@
         <span id="ref" class="hidden"><%= org.apache.nifi.util.EscapeUtils.escapeHtml(request.getParameter("ref")) %></span>
         <span id="clusterNodeId" class="hidden"><%= request.getParameter("clusterNodeId") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getParameter("clusterNodeId")) %></span>
         <span id="mode" class="hidden"><%= request.getParameter("mode") == null ? "" : org.apache.nifi.util.EscapeUtils.escapeHtml(request.getParameter("mode")) %></span>
-        <span id="requestUrl" class="hidden"><%= org.apache.nifi.util.EscapeUtils.escapeHtml(request.getRequestURL().toString()) %></span>
         <div id="content-viewer-message-dialog">
             <div class="dialog-content" style="margin-top: -20px;">
                 <div id="content-viewer-message"></div>

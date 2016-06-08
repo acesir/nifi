@@ -35,6 +35,13 @@
         <bulletin.board.filter>bulletin-board.properties</bulletin.board.filter>
         <login.filter>login.properties</login.filter>
         <provenance.filter>provenance.properties</provenance.filter>
+        <frontend.dependency.configs>${basedir}/src/main/frontend</frontend.dependency.configs>
+        <frontend.working.dir>${project.build.directory}/frontend-working-directory</frontend.working.dir>
+        <frontend.assets>${project.build.directory}/${project.build.finalName}/assets</frontend.assets>
+        <!--
+            This property can be set on the command line and allows any bower cli options to be set.
+        -->
+        <bower.options></bower.options>
     </properties>
     <build>
         <!--
@@ -62,25 +69,23 @@
             <!--
                 Precompile jsp's and add entries into the web.xml - the web.xml
                 is automatically places in ${project.build.directory}. Do not
-                precompile canvas.jsp, summary.jsp, history.jsp, etc. 
-                These jsp's need to have the artifacts version filtered in to 
-                eliminate broswer caching issues and set up the proper includes. 
-                Since the webResource filter occurs after the precompilation we 
+                precompile canvas.jsp, summary.jsp, history.jsp, etc.
+                These jsp's need to have the artifacts version filtered in to
+                eliminate broswer caching issues and set up the proper includes.
+                Since the webResource filter occurs after the precompilation we
                 must exclude them here.
             -->
             <plugin>
-                <groupId>org.mortbay.jetty</groupId>
+                <groupId>org.eclipse.jetty</groupId>
                 <artifactId>jetty-jspc-maven-plugin</artifactId>
-                <version>8.1.10.v20130312</version>
+                <version>${jetty.version}</version>
                 <executions>
                     <execution>
                         <goals>
                             <goal>jspc</goal>
                         </goals>
                         <configuration>
-                            <packageRoot>org.apache.nifi.web.jsp</packageRoot>
                             <keepSources>true</keepSources>
-                            <verbose>true</verbose>
                             <useProvidedScope>true</useProvidedScope>
                             <excludes>
                                 **/message-page.jsp,
@@ -109,6 +114,7 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <executions>
                     <execution>
+                        <id>copy-web-xml</id>
                         <phase>prepare-package</phase>
                         <goals>
                             <goal>copy-resources</goal>
@@ -126,12 +132,31 @@
                             </resources>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>copy-bower-json</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${frontend.working.dir}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${frontend.dependency.configs}</directory>
+                                    <filtering>false</filtering>
+                                    <includes>
+                                        <include>bower.json</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
             <!--
                 Tell the war plugin where to find the filtered web.xml and
                 filter the head portion of the pages. The correct includes and
-                project version is filtered into these jsp's as a browser cache 
+                project version is filtered into these jsp's as a browser cache
                 buster.
             -->
             <plugin>
@@ -215,6 +240,48 @@
                     </webResources>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <version>1.0</version>
+                <configuration>
+                    <installDirectory>${frontend.working.dir}</installDirectory>
+                </configuration>
+
+                <executions>
+                    <execution>
+                        <id>install-node-and-npm</id>
+                        <goals>
+                            <goal>install-node-and-npm</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <nodeVersion>v0.10.18</nodeVersion>
+                            <npmVersion>1.3.8</npmVersion>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>install-bower</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>install bower</arguments>
+                            <workingDirectory>${frontend.working.dir}</workingDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>bower-install</id>
+                        <goals>
+                            <goal>bower</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>install ${bower.options} --config.directory=${frontend.assets}</arguments>
+                            <workingDirectory>${frontend.working.dir}</workingDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
     <profiles>
@@ -237,7 +304,7 @@
             <build>
                 <plugins>
                     <!--
-                        Minifies and compresses the javascript and css. 
+                        Minifies and compresses the javascript and css.
                     -->
                     <plugin>
                         <groupId>net.alchim31.maven</groupId>
@@ -270,11 +337,11 @@
                                                 <include>${staging.dir}/js/nf/nf-storage.js</include>
                                                 <include>${staging.dir}/js/nf/nf-ajax-setup.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-snippet.js</include>
-                                                <include>${staging.dir}/js/nf/canvas/nf-canvas-toolbox.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-custom-ui.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-queue-listing.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-component-state.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-controller-service.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/nf-controller-services.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-reporting-task.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-processor-configuration.js</include>
                                                 <include>${staging.dir}/js/nf/nf-processor-details.js</include>
@@ -300,11 +367,6 @@
                                                 <include>${staging.dir}/js/nf/canvas/nf-selectable.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-connectable.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-birdseye.js</include>
-                                                <include>${staging.dir}/js/nf/canvas/nf-toolbar-action.js</include>
-                                                <include>${staging.dir}/js/nf/canvas/nf-canvas-toolbar.js</include>
-                                                <include>${staging.dir}/js/nf/canvas/nf-graph-control.js</include>
-                                                <include>${staging.dir}/js/nf/canvas/nf-canvas-header.js</include>
-                                                <include>${staging.dir}/js/nf/canvas/nf-search.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-settings.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-go-to.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-actions.js</include>
@@ -315,7 +377,23 @@
                                                 <include>${staging.dir}/js/nf/canvas/nf-ng-canvas-app-config.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-app-controller.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-breadcrumbs-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-header-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-toolbox-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-flow-status-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-global-menu-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-graph-controls-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-navigate-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/controllers/nf-ng-canvas-operate-controller.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-processor-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-input-port-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-output-port-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-group-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-remote-process-group-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-funnel-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-template-component.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/header/components/nf-ng-label-component.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/directives/nf-ng-breadcrumbs-directive.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/directives/nf-ng-draggable-directive.js</include>
                                                 <include>${staging.dir}/js/nf/nf-ng-bridge.js</include>
                                                 <include>${staging.dir}/js/nf/nf-ng-service-provider.js</include>
                                             </includes>
@@ -347,6 +425,7 @@
                                                 <include>${staging.dir}/js/nf/nf-ajax-setup.js</include>
                                                 <include>${staging.dir}/js/nf/provenance/nf-provenance.js</include>
                                                 <include>${staging.dir}/js/nf/provenance/nf-provenance-table.js</include>
+                                                <include>${staging.dir}/js/nf/provenance/nf-provenance-lineage.js</include>
                                             </includes>
                                         </aggregation>
                                         <aggregation>
@@ -361,6 +440,7 @@
                                                 <include>${staging.dir}/js/nf/nf-ajax-setup.js</include>
                                                 <include>${staging.dir}/js/nf/nf-processor-details.js</include>
                                                 <include>${staging.dir}/js/nf/nf-connection-details.js</include>
+                                                <include>${staging.dir}/js/nf/nf-status-history.js</include>
                                                 <include>${staging.dir}/js/nf/summary/nf-summary.js</include>
                                                 <include>${staging.dir}/js/nf/summary/nf-summary-table.js</include>
                                                 <include>${staging.dir}/js/nf/summary/nf-cluster-search.js</include>
@@ -566,6 +646,7 @@
                         <version>2.5</version>
                         <configuration>
                             <packagingIncludes>
+                                assets/**/*,
                                 css/reset.css,
                                 css/reset.css.gz,
                                 css/message-page.css,
@@ -594,7 +675,6 @@
                                 js/d3/**/*,
                                 js/codemirror/**/*,
                                 js/jquery/**/*,
-                                js/angular/**/*,
                                 js/nf/nf-namespace.js,
                                 js/nf/nf-namespace.js.gz,
                                 js/nf/nf-ng-namespace.js,
@@ -644,6 +724,7 @@
                         <configuration>
                             <excludes combine.children="append">
                                 <exclude>nbactions.xml</exclude>
+                                <exclude>src/main/frontend/bower.json</exclude>
                                 <exclude>src/main/webapp/js/json2.js</exclude>
                                 <exclude>src/main/webapp/js/jquery/</exclude>
                                 <exclude>src/main/webapp/js/d3/d3.min.js</exclude>
@@ -682,22 +763,6 @@
         <dependency>
             <groupId>javax.servlet</groupId>
             <artifactId>javax.servlet-api</artifactId>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>javax.servlet.jsp</groupId>
-            <artifactId>javax.servlet.jsp-api</artifactId>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>javax.el</groupId>
-            <artifactId>javax.el-api</artifactId>
-            <scope>provided</scope>            
-        </dependency>
-        <dependency>
-            <groupId>javax.servlet.jsp.jstl</groupId>
-            <artifactId>javax.servlet.jsp.jstl-api</artifactId>
-            <scope>provided</scope>
         </dependency>
     </dependencies>
 </project>

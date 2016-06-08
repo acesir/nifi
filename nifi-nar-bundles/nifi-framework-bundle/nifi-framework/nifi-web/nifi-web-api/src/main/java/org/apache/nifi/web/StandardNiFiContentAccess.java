@@ -16,59 +16,59 @@
  */
 package org.apache.nifi.web;
 
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.ClientResponse.Status;
-import com.sun.jersey.core.util.MultivaluedMapImpl;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.cluster.manager.NodeResponse;
-import org.apache.nifi.cluster.manager.exception.UnknownNodeException;
-import org.apache.nifi.cluster.manager.impl.WebClusterManager;
-import org.apache.nifi.cluster.node.Node;
-import org.apache.nifi.cluster.protocol.NodeIdentifier;
-import org.apache.nifi.controller.repository.claim.ContentDirection;
-import org.apache.nifi.util.NiFiProperties;
-import org.apache.nifi.web.security.user.NiFiUserDetails;
-import org.apache.nifi.web.util.WebUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-
-import javax.ws.rs.HttpMethod;
-import javax.ws.rs.core.MultivaluedMap;
 import java.io.Serializable;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import javax.ws.rs.HttpMethod;
+import javax.ws.rs.core.MultivaluedMap;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.AccessDeniedException;
+import org.apache.nifi.authorization.user.NiFiUserDetails;
+import org.apache.nifi.cluster.coordination.ClusterCoordinator;
+import org.apache.nifi.cluster.coordination.http.replication.RequestReplicator;
+import org.apache.nifi.cluster.manager.NodeResponse;
+import org.apache.nifi.cluster.manager.exception.IllegalClusterStateException;
+import org.apache.nifi.cluster.protocol.NodeIdentifier;
+import org.apache.nifi.controller.repository.claim.ContentDirection;
+import org.apache.nifi.util.NiFiProperties;
+import org.apache.nifi.web.util.WebUtils;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+
+import com.sun.jersey.api.client.ClientResponse;
+import com.sun.jersey.api.client.ClientResponse.Status;
+import com.sun.jersey.core.util.MultivaluedMapImpl;
 
 /**
  *
  */
 public class StandardNiFiContentAccess implements ContentAccess {
 
-    private static final Logger logger = LoggerFactory.getLogger(StandardNiFiContentAccess.class);
     public static final String CLIENT_ID_PARAM = "clientId";
 
     private static final Pattern FLOWFILE_CONTENT_URI_PATTERN = Pattern
-        .compile("/controller/process-groups/((?:root)|(?:[a-f0-9\\-]{36}))/connections/([a-f0-9\\-]{36})/flowfiles/([a-f0-9\\-]{36})/content.*");
+        .compile("/flowfile-queues/([a-f0-9\\-]{36})/flowfiles/([a-f0-9\\-]{36})/content.*");
 
     private static final Pattern PROVENANCE_CONTENT_URI_PATTERN = Pattern
-        .compile("/controller/provenance/events/([0-9]+)/content/((?:input)|(?:output)).*");
+        .compile("/provenance/events/([0-9]+)/content/((?:input)|(?:output)).*");
 
     private NiFiProperties properties;
     private NiFiServiceFacade serviceFacade;
-    private WebClusterManager clusterManager;
+    private ClusterCoordinator clusterCoordinator;
+    private RequestReplicator requestReplicator;
 
     @Override
     public DownloadableContent getContent(final ContentRequestContext request) {
         // if clustered, send request to cluster manager
-        if (properties.isClusterManager()) {
+        if (properties.isClustered() && clusterCoordinator != null && clusterCoordinator.isConnected()) {
             // get the URI
             URI dataUri;
             try {
@@ -106,16 +106,17 @@ public class StandardNiFiContentAccess implements ContentAccess {
             }
 
             // get the target node and ensure it exists
-            final Node targetNode = clusterManager.getNode(request.getClusterNodeId());
-            if (targetNode == null) {
-                throw new UnknownNodeException("The specified cluster node does not exist.");
-            }
-
-            final Set<NodeIdentifier> targetNodes = new HashSet<>();
-            targetNodes.add(targetNode.getNodeId());
+            final NodeIdentifier nodeId = clusterCoordinator.getNodeIdentifier(request.getClusterNodeId());
+            final Set<NodeIdentifier> targetNodes = Collections.singleton(nodeId);
 
             // replicate the request to the specific node
-            final NodeResponse nodeResponse = clusterManager.applyRequest(HttpMethod.GET, dataUri, parameters, headers, targetNodes);
+            NodeResponse nodeResponse;
+            try {
+                nodeResponse = requestReplicator.replicate(targetNodes, HttpMethod.GET, dataUri, parameters, headers).awaitMergedResponse();
+            } catch (InterruptedException e) {
+                throw new IllegalClusterStateException("Interrupted while waiting for a response from node");
+            }
+
             final ClientResponse clientResponse = nodeResponse.getClientResponse();
             final MultivaluedMap<String, String> responseHeaders = clientResponse.getHeaders();
 
@@ -140,8 +141,8 @@ public class StandardNiFiContentAccess implements ContentAccess {
             return new DownloadableContent(filename, contentType, clientResponse.getEntityInputStream());
         } else {
             // example URIs:
-            // http://localhost:8080/nifi-api/controller/provenance/events/{id}/content/{input|output}
-            // http://localhost:8080/nifi-api/controller/process-groups/{root|uuid}/connections/{uuid}/flowfiles/{uuid}/content
+            // http://localhost:8080/nifi-api/provenance/events/{id}/content/{input|output}
+            // http://localhost:8080/nifi-api/flowfile-queues/{uuid}/flowfiles/{uuid}/content
 
             // get just the context path for comparison
             final String dataUri = StringUtils.substringAfter(request.getDataUri(), "/nifi-api");
@@ -152,11 +153,10 @@ public class StandardNiFiContentAccess implements ContentAccess {
             // flowfile listing content
             final Matcher flowFileMatcher = FLOWFILE_CONTENT_URI_PATTERN.matcher(dataUri);
             if (flowFileMatcher.matches()) {
-                final String groupId = flowFileMatcher.group(1);
-                final String connectionId = flowFileMatcher.group(2);
-                final String flowfileId = flowFileMatcher.group(3);
+                final String connectionId = flowFileMatcher.group(1);
+                final String flowfileId = flowFileMatcher.group(2);
 
-                return getFlowFileContent(groupId, connectionId, flowfileId, dataUri);
+                return getFlowFileContent(connectionId, flowfileId, dataUri);
             }
 
             // provenance event content
@@ -177,7 +177,7 @@ public class StandardNiFiContentAccess implements ContentAccess {
         }
     }
 
-    private DownloadableContent getFlowFileContent(final String groupId, final String connectionId, final String flowfileId, final String dataUri) {
+    private DownloadableContent getFlowFileContent(final String connectionId, final String flowfileId, final String dataUri) {
         // TODO - ensure the user is authorized - not checking with @PreAuthorized annotation as aspect not trigger on call within a class
 //        if (!NiFiUserUtils.getAuthorities().contains(Authority.ROLE_DFM.toString())) {
 //            throw new AccessDeniedException("Access is denied.");
@@ -203,7 +203,11 @@ public class StandardNiFiContentAccess implements ContentAccess {
         this.serviceFacade = serviceFacade;
     }
 
-    public void setClusterManager(WebClusterManager clusterManager) {
-        this.clusterManager = clusterManager;
+    public void setRequestReplicator(RequestReplicator requestReplicator) {
+        this.requestReplicator = requestReplicator;
+    }
+
+    public void setClusterCoordinator(ClusterCoordinator clusterCoordinator) {
+        this.clusterCoordinator = clusterCoordinator;
     }
 }
