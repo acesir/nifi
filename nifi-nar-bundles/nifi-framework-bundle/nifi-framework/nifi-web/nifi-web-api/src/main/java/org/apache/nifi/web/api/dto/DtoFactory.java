@@ -127,6 +127,7 @@ import org.apache.nifi.reporting.Bulletin;
 import org.apache.nifi.reporting.ReportingTask;
 import org.apache.nifi.scheduling.SchedulingStrategy;
 import org.apache.nifi.util.FormatUtils;
+import org.apache.nifi.util.StringUtils;
 import org.apache.nifi.web.FlowModification;
 import org.apache.nifi.web.Revision;
 import org.apache.nifi.web.api.dto.PropertyDescriptorDTO.AllowableValueDTO;
@@ -172,6 +173,7 @@ public final class DtoFactory {
             return Collator.getInstance(Locale.US).compare(class1.getSimpleName(), class2.getSimpleName());
         }
     };
+    public static final String SENSITIVE_VALUE_MASK = "********";
 
     private ControllerServiceProvider controllerServiceProvider;
     private EntityFactory entityFactory;
@@ -1094,7 +1096,7 @@ public final class DtoFactory {
         final ReportingTaskDTO dto = new ReportingTaskDTO();
         dto.setId(reportingTaskNode.getIdentifier());
         dto.setName(reportingTaskNode.getName());
-        dto.setType(reportingTaskNode.getReportingTask().getClass().getName());
+        dto.setType(reportingTaskNode.getComponentType());
         dto.setSchedulingStrategy(reportingTaskNode.getSchedulingStrategy().name());
         dto.setSchedulingPeriod(reportingTaskNode.getSchedulingPeriod());
         dto.setState(reportingTaskNode.getScheduledState().name());
@@ -1140,7 +1142,7 @@ public final class DtoFactory {
             // determine the property value - don't include sensitive properties
             String propertyValue = entry.getValue();
             if (propertyValue != null && descriptor.isSensitive()) {
-                propertyValue = "********";
+                propertyValue = SENSITIVE_VALUE_MASK;
             }
 
             // set the property value
@@ -1166,7 +1168,7 @@ public final class DtoFactory {
         dto.setId(controllerServiceNode.getIdentifier());
         dto.setParentGroupId(controllerServiceNode.getProcessGroup() == null ? null : controllerServiceNode.getProcessGroup().getIdentifier());
         dto.setName(controllerServiceNode.getName());
-        dto.setType(controllerServiceNode.getControllerServiceImplementation().getClass().getName());
+        dto.setType(controllerServiceNode.getComponentType());
         dto.setState(controllerServiceNode.getState().name());
         dto.setAnnotationData(controllerServiceNode.getAnnotationData());
         dto.setComments(controllerServiceNode.getComments());
@@ -1204,7 +1206,7 @@ public final class DtoFactory {
             // determine the property value - don't include sensitive properties
             String propertyValue = entry.getValue();
             if (propertyValue != null && descriptor.isSensitive()) {
-                propertyValue = "********";
+                propertyValue = SENSITIVE_VALUE_MASK;
             }
 
             // set the property value
@@ -1238,7 +1240,7 @@ public final class DtoFactory {
             dto.setGroupId(node.getProcessGroup().getIdentifier());
             dto.setState(node.getScheduledState().name());
             dto.setActiveThreadCount(node.getActiveThreadCount());
-            dto.setType(node.getProcessor().getClass().getName());
+            dto.setType(node.getComponentType());
             dto.setReferenceType(Processor.class.getSimpleName());
 
             propertyDescriptors = node.getProcessor().getPropertyDescriptors();
@@ -1247,7 +1249,7 @@ public final class DtoFactory {
         } else if (component instanceof ControllerServiceNode) {
             final ControllerServiceNode node = ((ControllerServiceNode) component);
             dto.setState(node.getState().name());
-            dto.setType(node.getControllerServiceImplementation().getClass().getName());
+            dto.setType(node.getComponentType());
             dto.setReferenceType(ControllerService.class.getSimpleName());
 
             propertyDescriptors = node.getControllerServiceImplementation().getPropertyDescriptors();
@@ -1257,7 +1259,7 @@ public final class DtoFactory {
             final ReportingTaskNode node = ((ReportingTaskNode) component);
             dto.setState(node.getScheduledState().name());
             dto.setActiveThreadCount(node.getActiveThreadCount());
-            dto.setType(node.getReportingTask().getClass().getName());
+            dto.setType(node.getComponentType());
             dto.setReferenceType(ReportingTask.class.getSimpleName());
 
             propertyDescriptors = node.getReportingTask().getPropertyDescriptors();
@@ -1292,7 +1294,7 @@ public final class DtoFactory {
                 // determine the property value - don't include sensitive properties
                 String propertyValue = entry.getValue();
                 if (propertyValue != null && descriptor.isSensitive()) {
-                    propertyValue = "********";
+                    propertyValue = SENSITIVE_VALUE_MASK;
                 }
 
                 // set the property value
@@ -1395,6 +1397,13 @@ public final class DtoFactory {
         dto.setTargetUri(group.getTargetUri().toString());
         dto.setFlowRefreshed(group.getLastRefreshTime());
         dto.setContents(contents);
+        dto.setTransportProtocol(group.getTransportProtocol().name());
+        dto.setProxyHost(group.getProxyHost());
+        dto.setProxyPort(group.getProxyPort());
+        dto.setProxyUser(group.getProxyUser());
+        if (!StringUtils.isEmpty(group.getProxyPassword())) {
+            dto.setProxyPassword(SENSITIVE_VALUE_MASK);
+        }
 
         // only specify the secure flag if we know the target system has site to site enabled
         if (group.isSiteToSiteEnabled()) {
@@ -1853,7 +1862,7 @@ public final class DtoFactory {
         dto.setInputRequirement(node.getInputRequirement().name());
         dto.setPersistsState(node.getProcessor().getClass().isAnnotationPresent(Stateful.class));
 
-        dto.setType(node.getProcessor().getClass().getCanonicalName());
+        dto.setType(node.getCanonicalClassName());
         dto.setName(node.getName());
         dto.setState(node.getScheduledState().toString());
 
@@ -2273,7 +2282,7 @@ public final class DtoFactory {
             // determine the property value - don't include sensitive properties
             String propertyValue = entry.getValue();
             if (propertyValue != null && descriptor.isSensitive()) {
-                propertyValue = "********";
+                propertyValue = SENSITIVE_VALUE_MASK;
             }
 
             // set the property value
@@ -2600,6 +2609,11 @@ public final class DtoFactory {
         copy.setInactiveRemoteOutputPortCount(original.getInactiveRemoteOutputPortCount());
         copy.setParentGroupId(original.getParentGroupId());
         copy.setTargetUri(original.getTargetUri());
+        copy.setTransportProtocol(original.getTransportProtocol());
+        copy.setProxyHost(original.getProxyHost());
+        copy.setProxyPort(original.getProxyPort());
+        copy.setProxyUser(original.getProxyUser());
+        copy.setProxyPassword(original.getProxyPassword());
 
         copy.setContents(copyContents);
 
