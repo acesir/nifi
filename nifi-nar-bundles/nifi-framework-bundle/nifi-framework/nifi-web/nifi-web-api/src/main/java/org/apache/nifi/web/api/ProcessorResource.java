@@ -16,9 +16,31 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.List;
-import java.util.Set;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.ui.extension.UiExtension;
+import org.apache.nifi.ui.extension.UiExtensionMapping;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.UiExtensionType;
+import org.apache.nifi.web.api.dto.ComponentStateDTO;
+import org.apache.nifi.web.api.dto.ProcessorConfigDTO;
+import org.apache.nifi.web.api.dto.ProcessorDTO;
+import org.apache.nifi.web.api.dto.PropertyDescriptorDTO;
+import org.apache.nifi.web.api.entity.ComponentStateEntity;
+import org.apache.nifi.web.api.entity.ProcessorEntity;
+import org.apache.nifi.web.api.entity.PropertyDescriptorEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
@@ -36,33 +58,8 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.ui.extension.UiExtension;
-import org.apache.nifi.ui.extension.UiExtensionMapping;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UiExtensionType;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.ComponentStateDTO;
-import org.apache.nifi.web.api.dto.ProcessorConfigDTO;
-import org.apache.nifi.web.api.dto.ProcessorDTO;
-import org.apache.nifi.web.api.dto.PropertyDescriptorDTO;
-import org.apache.nifi.web.api.entity.ComponentStateEntity;
-import org.apache.nifi.web.api.entity.ProcessorEntity;
-import org.apache.nifi.web.api.entity.PropertyDescriptorEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.util.List;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Processor.
@@ -87,9 +84,7 @@ public class ProcessorResource extends ApplicationResource {
      */
     public Set<ProcessorEntity> populateRemainingProcessorEntitiesContent(Set<ProcessorEntity> processorEntities) {
         for (ProcessorEntity processorEntity : processorEntities) {
-            if (processorEntity.getComponent() != null) {
-                populateRemainingProcessorContent(processorEntity.getComponent());
-            }
+            populateRemainingProcessorEntityContent(processorEntity);
         }
         return processorEntities;
     }
@@ -101,6 +96,9 @@ public class ProcessorResource extends ApplicationResource {
      * @return dtos
      */
     public ProcessorEntity populateRemainingProcessorEntityContent(ProcessorEntity processorEntity) {
+        processorEntity.setUri(generateResourceUri("processors", processorEntity.getId()));
+
+        // populate remaining content
         if (processorEntity.getComponent() != null) {
             populateRemainingProcessorContent(processorEntity.getComponent());
         }
@@ -108,25 +106,9 @@ public class ProcessorResource extends ApplicationResource {
     }
 
     /**
-     * Populate the uri's for the specified processors and their relationships.
-     *
-     * @param processors processors
-     * @return dtos
-     */
-    public Set<ProcessorDTO> populateRemainingProcessorsContent(Set<ProcessorDTO> processors) {
-        for (ProcessorDTO processor : processors) {
-            populateRemainingProcessorContent(processor);
-        }
-        return processors;
-    }
-
-    /**
      * Populate the uri's for the specified processor and its relationships.
      */
     public ProcessorDTO populateRemainingProcessorContent(ProcessorDTO processor) {
-        // populate the remaining properties
-        processor.setUri(generateResourceUri("processors", processor.getId()));
-
         // get the config details and see if there is a custom ui for this processor type
         ProcessorConfigDTO config = processor.getConfig();
         if (config != null) {
@@ -195,7 +177,7 @@ public class ProcessorResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processor = lookup.getProcessor(id);
-            processor.authorize(authorizer, RequestAction.READ);
+            processor.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the specified processor
@@ -266,7 +248,7 @@ public class ProcessorResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processor = lookup.getProcessor(id);
-            processor.authorize(authorizer, RequestAction.READ);
+            processor.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the property descriptor
@@ -322,7 +304,7 @@ public class ProcessorResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processor = lookup.getProcessor(id);
-            processor.authorize(authorizer, RequestAction.WRITE);
+            processor.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
         });
 
         // get the component state
@@ -377,13 +359,15 @@ public class ProcessorResource extends ApplicationResource {
             return replicate(HttpMethod.POST);
         }
 
-        // handle expects request (usually from the cluster manager)
-        if (isValidationPhase(httpServletRequest)) {
+        final boolean isValidationPhase = isValidationPhase(httpServletRequest);
+        if (isValidationPhase || !isTwoPhaseRequest(httpServletRequest)) {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processor = lookup.getProcessor(id);
-                processor.authorize(authorizer, RequestAction.WRITE);
+                processor.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
+        }
+        if (isValidationPhase) {
             serviceFacade.verifyCanClearProcessorState(id);
             return generateContinueResponse().build();
         }
@@ -465,21 +449,16 @@ public class ProcessorResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable processor = lookup.getProcessor(id);
-                processor.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getProcessor(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateProcessor(requestProcessorDTO),
             () -> {
                 // update the processor
-                final UpdateResult<ProcessorEntity> result = serviceFacade.updateProcessor(revision, requestProcessorDTO);
-                final ProcessorEntity entity = result.getResult();
+                final ProcessorEntity entity = serviceFacade.updateProcessor(revision, requestProcessorDTO);
                 populateRemainingProcessorEntityContent(entity);
 
-                if (result.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }
@@ -543,7 +522,7 @@ public class ProcessorResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable processor = lookup.getProcessor(id);
-                processor.authorize(authorizer, RequestAction.WRITE);
+                processor.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteProcessor(id),
             () -> {

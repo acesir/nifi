@@ -20,20 +20,6 @@
 nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operateCtrl) {
     'use strict';
 
-    var MIN_GRAPH_CONTROL_TOP = 117;
-
-    /**
-     * Positions the graph controls based on the size of the screen.
-     */
-    var positionGraphControls = function () {
-        var windowHeight = $(window).height();
-        var navigationHeight = $('#navigation-control').outerHeight();
-        var operationHeight = $('#operation-control').outerHeight();
-        var graphControlTop = (windowHeight / 2) - ((navigationHeight + operationHeight) / 2);
-
-        $('#graph-controls').css('top', Math.max(MIN_GRAPH_CONTROL_TOP, graphControlTop));
-    };
-
     /**
      * Opens the specified graph control.
      *
@@ -49,7 +35,7 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
 
         // show the content of the specified graph control
         graphControl.children('div.graph-control-content').show();
-        graphControl.find('i.graph-control-expansion').removeClass('fa-plus-square-o').addClass('fa-minus-square-o');
+        graphControl.find('div.graph-control-expansion').removeClass('fa-plus-square-o').addClass('fa-minus-square-o');
 
         // handle specific actions as necessary
         if (graphControl.attr('id') === 'navigation-control') {
@@ -66,9 +52,6 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
         var graphControlId = graphControl.attr('id');
         graphControlVisibility[graphControlId] = true;
         nf.Storage.setItem('graph-control-visibility', graphControlVisibility);
-
-        // reset the graph control position
-        positionGraphControls();
     };
 
     /**
@@ -79,7 +62,7 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
     var hideGraphControl = function (graphControl) {
         // hide the content of the specified graph control
         graphControl.children('div.graph-control-content').hide();
-        graphControl.find('i.graph-control-expansion').removeClass('fa-minus-square-o').addClass('fa-plus-square-o');
+        graphControl.find('div.graph-control-expansion').removeClass('fa-minus-square-o').addClass('fa-plus-square-o');
 
         // dock if necessary
         if ($('div.graph-control-content').is(':visible') === false) {
@@ -103,22 +86,20 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
         var graphControlId = graphControl.attr('id');
         graphControlVisibility[graphControlId] = false;
         nf.Storage.setItem('graph-control-visibility', graphControlVisibility);
-
-        // reset the graph control position
-        positionGraphControls();
     };
 
     function GraphControlsCtrl(navigateCtrl, operateCtrl) {
         this.navigateCtrl = navigateCtrl;
         this.operateCtrl = operateCtrl;
     }
+
     GraphControlsCtrl.prototype = {
         constructor: GraphControlsCtrl,
 
         /**
          *  Register the header controller.
          */
-        register: function() {
+        register: function () {
             if (serviceProvider.graphControlsCtrl === undefined) {
                 serviceProvider.register('graphControlsCtrl', graphControlsCtrl);
             }
@@ -127,7 +108,7 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
         /**
          * Initialize the graph controls.
          */
-        init: function() {
+        init: function () {
             this.operateCtrl.init();
             // initial the graph control visibility
             var graphControlVisibility = nf.Storage.getItem('graph-control-visibility');
@@ -142,20 +123,17 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
                         }
                     }
                 });
+            } else {
+                openGraphControl($('#navigation-control'));
+                openGraphControl($('#operation-control'));
             }
-
-            // listen for browser resize events to reset the graph control positioning
-            $(window).resize(positionGraphControls);
-
-            // set the initial position
-            positionGraphControls();
         },
 
         /**
          * Undock the graph control.
          * @param {jQuery} $event
          */
-        undock: function($event) {
+        undock: function ($event) {
             openGraphControl($($event.target).parent().parent());
         },
 
@@ -163,14 +141,151 @@ nf.ng.Canvas.GraphControlsCtrl = function (serviceProvider, navigateCtrl, operat
          * Expand the graph control.
          * @param {jQuery} $event
          */
-        expand: function($event) {
+        expand: function ($event) {
             var icon = $($event.target);
             if (icon.hasClass('fa-plus-square-o')) {
                 openGraphControl(icon.closest('div.graph-control'));
             } else {
                 hideGraphControl(icon.closest('div.graph-control'));
             }
-        }
+        },
+
+        /**
+         * Gets the icon to show for the selection context.
+         */
+        getContextIcon: function () {
+            var selection = nf.CanvasUtils.getSelection();
+
+            if (selection.empty()) {
+                if (nf.Canvas.getParentGroupId() === null) {
+                    return 'icon-drop';
+                } else {
+                    return 'icon-group';
+                }
+            } else {
+                if (selection.size() === 1) {
+                    if (nf.CanvasUtils.isProcessor(selection)) {
+                        return 'icon-processor';
+                    } else if (nf.CanvasUtils.isProcessGroup(selection)) {
+                        return 'icon-group';
+                    } else if (nf.CanvasUtils.isInputPort(selection)) {
+                        return 'icon-port-in';
+                    } else if (nf.CanvasUtils.isOutputPort(selection)) {
+                        return 'icon-port-out';
+                    } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
+                        return 'icon-group-remote';
+                    } else if (nf.CanvasUtils.isFunnel(selection)) {
+                        return 'icon-funnel';
+                    } else if (nf.CanvasUtils.isLabel(selection)) {
+                        return 'icon-label';
+                    } else if (nf.CanvasUtils.isConnection(selection)) {
+                        return 'icon-connect';
+                    }
+                } else {
+                    return 'icon-drop';
+                }
+            }
+        },
+
+        /**
+         * Will hide target when appropriate.
+         */
+        hide: function () {
+            var selection = nf.CanvasUtils.getSelection();
+            if (selection.size() > 1) {
+                return 'invisible'
+            } else {
+                return '';
+            }
+        },
+
+        /**
+         * Gets the name to show for the selection context.
+         */
+        getContextName: function () {
+            var selection = nf.CanvasUtils.getSelection();
+            var canRead = nf.Canvas.canRead();
+
+            if (selection.empty()) {
+                if (canRead) {
+                    return nf.Canvas.getGroupName();
+                } else {
+                    return nf.Canvas.getGroupId();
+                }
+            } else {
+                if (selection.size() === 1) {
+                    var d = selection.datum();
+                    if (d.permissions.canRead) {
+                        if (nf.CanvasUtils.isLabel(selection)) {
+                            if ($.trim(d.component.label) !== '') {
+                                return d.component.label;
+                            } else {
+                                return '';
+                            }
+                        } else if (nf.CanvasUtils.isConnection(selection)) {
+                            return nf.CanvasUtils.formatConnectionName(d.component);
+                        } else {
+                            return d.component.name;
+                        }
+                    } else {
+                        return d.id;
+                    }
+                } else {
+                    return 'Multiple components selected';
+                }
+            }
+        },
+
+        /**
+         * Gets the type to show for the selection context.
+         */
+        getContextType: function () {
+            var selection = nf.CanvasUtils.getSelection();
+
+            if (selection.empty()) {
+                return 'Process Group';
+            } else {
+                if (selection.size() === 1) {
+                    if (nf.CanvasUtils.isProcessor(selection)) {
+                        return 'Processor';
+                    } else if (nf.CanvasUtils.isProcessGroup(selection)) {
+                        return 'Process Group';
+                    } else if (nf.CanvasUtils.isInputPort(selection)) {
+                        return 'Input Port';
+                    } else if (nf.CanvasUtils.isOutputPort(selection)) {
+                        return 'Output Port';
+                    } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
+                        return 'Remote Process Group';
+                    } else if (nf.CanvasUtils.isFunnel(selection)) {
+                        return 'Funnel';
+                    } else if (nf.CanvasUtils.isLabel(selection)) {
+                        return 'Label';
+                    } else if (nf.CanvasUtils.isConnection(selection)) {
+                        return 'Connection';
+                    }
+                } else {
+                    return 'Multiple selected';
+                }
+            }
+        },
+
+        /**
+         * Gets the id to show for the selection context.
+         */
+        getContextId: function () {
+            var selection = nf.CanvasUtils.getSelection();
+
+            if (selection.empty()) {
+                return nf.Canvas.getGroupId();
+            } else {
+                if (selection.size() === 1) {
+                    var d = selection.datum();
+                    return d.id;
+                } else {
+                    return 'Multiple selected';
+                }     
+            }
+        },
     }
 
     var graphControlsCtrl = new GraphControlsCtrl(navigateCtrl, operateCtrl);

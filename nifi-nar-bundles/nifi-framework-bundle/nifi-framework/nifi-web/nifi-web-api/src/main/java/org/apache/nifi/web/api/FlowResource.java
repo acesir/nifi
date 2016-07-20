@@ -30,24 +30,36 @@ import org.apache.nifi.authorization.AuthorizationResult;
 import org.apache.nifi.authorization.AuthorizationResult.Result;
 import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.UserContextKeys;
 import org.apache.nifi.authorization.resource.Authorizable;
 import org.apache.nifi.authorization.resource.ResourceFactory;
 import org.apache.nifi.authorization.user.NiFiUser;
 import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.cluster.coordination.ClusterCoordinator;
+import org.apache.nifi.cluster.coordination.node.NodeConnectionState;
 import org.apache.nifi.cluster.manager.NodeResponse;
+import org.apache.nifi.cluster.protocol.NodeIdentifier;
 import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.groups.ProcessGroup;
 import org.apache.nifi.util.NiFiProperties;
+import org.apache.nifi.web.IllegalClusterResourceRequestException;
 import org.apache.nifi.web.NiFiServiceFacade;
 import org.apache.nifi.web.Revision;
 import org.apache.nifi.web.api.dto.AboutDTO;
 import org.apache.nifi.web.api.dto.BannerDTO;
 import org.apache.nifi.web.api.dto.BulletinBoardDTO;
 import org.apache.nifi.web.api.dto.BulletinQueryDTO;
+import org.apache.nifi.web.api.dto.ClusterDTO;
+import org.apache.nifi.web.api.dto.ClusterSummaryDTO;
+import org.apache.nifi.web.api.dto.NodeDTO;
 import org.apache.nifi.web.api.dto.ProcessGroupDTO;
 import org.apache.nifi.web.api.dto.RevisionDTO;
+import org.apache.nifi.web.api.dto.action.ActionDTO;
+import org.apache.nifi.web.api.dto.action.HistoryDTO;
+import org.apache.nifi.web.api.dto.action.HistoryQueryDTO;
 import org.apache.nifi.web.api.dto.flow.FlowDTO;
 import org.apache.nifi.web.api.dto.flow.ProcessGroupFlowDTO;
+import org.apache.nifi.web.api.dto.search.NodeSearchResultDTO;
 import org.apache.nifi.web.api.dto.search.SearchResultsDTO;
 import org.apache.nifi.web.api.dto.status.ConnectionStatusDTO;
 import org.apache.nifi.web.api.dto.status.ControllerStatusDTO;
@@ -59,16 +71,21 @@ import org.apache.nifi.web.api.dto.status.ProcessorStatusDTO;
 import org.apache.nifi.web.api.dto.status.RemoteProcessGroupStatusDTO;
 import org.apache.nifi.web.api.dto.status.StatusHistoryDTO;
 import org.apache.nifi.web.api.entity.AboutEntity;
-import org.apache.nifi.web.api.entity.AuthorityEntity;
+import org.apache.nifi.web.api.entity.ActionEntity;
 import org.apache.nifi.web.api.entity.BannerEntity;
 import org.apache.nifi.web.api.entity.BulletinBoardEntity;
+import org.apache.nifi.web.api.entity.ClusteSummaryEntity;
+import org.apache.nifi.web.api.entity.ClusterSearchResultsEntity;
+import org.apache.nifi.web.api.entity.ComponentHistoryEntity;
 import org.apache.nifi.web.api.entity.ConnectionStatusEntity;
+import org.apache.nifi.web.api.entity.ControllerBulletinsEntity;
 import org.apache.nifi.web.api.entity.ControllerServiceEntity;
 import org.apache.nifi.web.api.entity.ControllerServiceTypesEntity;
 import org.apache.nifi.web.api.entity.ControllerServicesEntity;
 import org.apache.nifi.web.api.entity.ControllerStatusEntity;
-import org.apache.nifi.web.api.entity.Entity;
-import org.apache.nifi.web.api.entity.IdentityEntity;
+import org.apache.nifi.web.api.entity.CurrentUserEntity;
+import org.apache.nifi.web.api.entity.FlowConfigurationEntity;
+import org.apache.nifi.web.api.entity.HistoryEntity;
 import org.apache.nifi.web.api.entity.PortStatusEntity;
 import org.apache.nifi.web.api.entity.PrioritizerTypesEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupEntity;
@@ -83,8 +100,11 @@ import org.apache.nifi.web.api.entity.ReportingTasksEntity;
 import org.apache.nifi.web.api.entity.ScheduleComponentsEntity;
 import org.apache.nifi.web.api.entity.SearchResultsEntity;
 import org.apache.nifi.web.api.entity.StatusHistoryEntity;
+import org.apache.nifi.web.api.entity.TemplateEntity;
+import org.apache.nifi.web.api.entity.TemplatesEntity;
 import org.apache.nifi.web.api.request.BulletinBoardPatternParameter;
 import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.DateTimeParameter;
 import org.apache.nifi.web.api.request.IntegerParameter;
 import org.apache.nifi.web.api.request.LongParameter;
 
@@ -102,10 +122,12 @@ import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -190,12 +212,21 @@ public class FlowResource extends ApplicationResource {
     private void authorizeFlow() {
         final NiFiUser user = NiFiUserUtils.getNiFiUser();
 
+        final Map<String,String> userContext;
+        if (!StringUtils.isBlank(user.getClientAddress())) {
+            userContext = new HashMap<>();
+            userContext.put(UserContextKeys.CLIENT_ADDRESS.name(), user.getClientAddress());
+        } else {
+            userContext = null;
+        }
+
         final AuthorizationRequest request = new AuthorizationRequest.Builder()
             .resource(ResourceFactory.getFlowResource())
             .identity(user.getIdentity())
             .anonymous(user.isAnonymous())
             .accessAttempt(true)
             .action(RequestAction.READ)
+            .userContext(userContext)
             .build();
 
         final AuthorizationResult result = authorizer.authorize(request);
@@ -238,58 +269,23 @@ public class FlowResource extends ApplicationResource {
     }
 
     /**
-     * Retrieves the identity of the user making the request.
+     * Retrieves the configuration for the flow.
      *
-     * @return An identityEntity
+     * @return A flowConfigurationEntity.
      */
     @GET
     @Consumes(MediaType.WILDCARD)
     @Produces(MediaType.APPLICATION_JSON)
-    @Path("identity")
+    @Path("config")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN', 'ROLE_NIFI')")
     @ApiOperation(
-            value = "Retrieves the user identity of the user making the request",
-            response = IdentityEntity.class
-    )
-    public Response getIdentity() {
-
-        authorizeFlow();
-
-        // note that the cluster manager will handle this request directly
-        final NiFiUser user = NiFiUserUtils.getNiFiUser();
-        if (user == null) {
-            throw new WebApplicationException(new Throwable("Unable to access details for current user."));
-        }
-
-        // create the response entity
-        IdentityEntity entity = new IdentityEntity();
-        entity.setUserId(user.getIdentity());
-        entity.setIdentity(user.getUserName());
-        entity.setAnonymous(user.isAnonymous());
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
-    }
-
-    /**x
-     * Retrieves the user details, including the authorities, about the user making the request.
-     *
-     * @return A authoritiesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces(MediaType.APPLICATION_JSON)
-    @Path("authorities")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN', 'ROLE_PROXY', 'ROLE_NIFI', 'ROLE_PROVENANCE')")
-    @ApiOperation(
-            value = "Retrieves the user details, including the authorities, about the user making the request",
-            response = AuthorityEntity.class,
+            value = "Retrieves the configuration for this NiFi flow",
+            response = FlowConfigurationEntity.class,
             authorizations = {
                     @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
                     @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
                     @Authorization(value = "Administrator", type = "ROLE_ADMIN"),
-                    @Authorization(value = "Proxy", type = "ROLE_PROXY"),
-                    @Authorization(value = "NiFi", type = "ROLE_NIFI"),
-                    @Authorization(value = "Provenance", type = "ROLE_PROVENANCE")
+                    @Authorization(value = "ROLE_NIFI", type = "ROLE_NIFI")
             }
     )
     @ApiResponses(
@@ -300,9 +296,29 @@ public class FlowResource extends ApplicationResource {
                     @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response getAuthorities() {
+    public Response getFlowConfig() {
 
-        // TODO - Remove
+        authorizeFlow();
+
+        final FlowConfigurationEntity entity = serviceFacade.getFlowConfiguration();
+        return clusterContext(generateOkResponse(entity)).build();
+    }
+
+    /**
+     * Retrieves the identity of the user making the request.
+     *
+     * @return An identityEntity
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("current-user")
+    @ApiOperation(
+            value = "Retrieves the user identity of the user making the request",
+            response = CurrentUserEntity.class
+    )
+    public Response getCurrentUser() {
+
         authorizeFlow();
 
         // note that the cluster manager will handle this request directly
@@ -312,9 +328,7 @@ public class FlowResource extends ApplicationResource {
         }
 
         // create the response entity
-        AuthorityEntity entity = new AuthorityEntity();
-        entity.setUserId(user.getIdentity());
-        entity.setAuthorities(new HashSet<>(Arrays.asList("ROLE_MONITOR", "ROLE_DFM", "ROLE_ADMIN", "ROLE_PROXY", "ROLE_NIFI", "ROLE_PROVENANCE")));
+        final CurrentUserEntity entity = serviceFacade.getCurrentUser();
 
         // generate the response
         return clusterContext(generateOkResponse(entity)).build();
@@ -413,6 +427,8 @@ public class FlowResource extends ApplicationResource {
     )
     public Response getControllerServicesFromController() {
 
+        authorizeFlow();
+
         if (isReplicateRequest()) {
             return replicate(HttpMethod.GET);
         }
@@ -463,6 +479,8 @@ public class FlowResource extends ApplicationResource {
             required = true
         )
         @PathParam("id") String groupId) throws InterruptedException {
+
+        authorizeFlow();
 
         // get all the controller services
         final Set<ControllerServiceEntity> controllerServices = serviceFacade.getControllerServices(groupId);
@@ -516,6 +534,8 @@ public class FlowResource extends ApplicationResource {
             required = false
         )
         @QueryParam(CLIENT_ID) @DefaultValue(StringUtils.EMPTY) ClientIdParameter clientId) {
+
+        authorizeFlow();
 
         if (isReplicateRequest()) {
             return replicate(HttpMethod.GET);
@@ -571,6 +591,8 @@ public class FlowResource extends ApplicationResource {
         @PathParam("id") String id,
         ScheduleComponentsEntity scheduleComponentsEntity) {
 
+        authorizeFlow();
+
         // ensure the same id is being used
         if (!id.equals(scheduleComponentsEntity.getId())) {
             throw new IllegalArgumentException(String.format("The process group id (%s) in the request body does "
@@ -595,7 +617,6 @@ public class FlowResource extends ApplicationResource {
 
         // if the components are not specified, gather all components and their current revision
         if (scheduleComponentsEntity.getComponents() == null) {
-            // TODO - this will break while clustered until nodes are able to process/replicate requests
             // get the current revisions for the components being updated
             final Set<Revision> revisions = serviceFacade.getRevisionsFromGroup(id, group -> {
                 final Set<String> componentIds = new HashSet<>();
@@ -603,7 +624,7 @@ public class FlowResource extends ApplicationResource {
                 // ensure authorized for each processor we will attempt to schedule
                 group.findAllProcessors().stream()
                     .filter(ScheduledState.RUNNING.equals(state) ? ProcessGroup.SCHEDULABLE_PROCESSORS : ProcessGroup.UNSCHEDULABLE_PROCESSORS)
-                    .filter(processor -> processor.isAuthorized(authorizer, RequestAction.WRITE))
+                    .filter(processor -> processor.isAuthorized(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser()))
                     .forEach(processor -> {
                         componentIds.add(processor.getIdentifier());
                     });
@@ -611,7 +632,7 @@ public class FlowResource extends ApplicationResource {
                 // ensure authorized for each input port we will attempt to schedule
                 group.findAllInputPorts().stream()
                     .filter(ScheduledState.RUNNING.equals(state) ? ProcessGroup.SCHEDULABLE_PORTS : ProcessGroup.UNSCHEDULABLE_PORTS)
-                    .filter(inputPort -> inputPort.isAuthorized(authorizer, RequestAction.WRITE))
+                    .filter(inputPort -> inputPort.isAuthorized(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser()))
                     .forEach(inputPort -> {
                         componentIds.add(inputPort.getIdentifier());
                     });
@@ -619,7 +640,7 @@ public class FlowResource extends ApplicationResource {
                 // ensure authorized for each output port we will attempt to schedule
                 group.findAllOutputPorts().stream()
                     .filter(ScheduledState.RUNNING.equals(state) ? ProcessGroup.SCHEDULABLE_PORTS : ProcessGroup.UNSCHEDULABLE_PORTS)
-                    .filter(outputPort -> outputPort.isAuthorized(authorizer, RequestAction.WRITE))
+                    .filter(outputPort -> outputPort.isAuthorized(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser()))
                     .forEach(outputPort -> {
                         componentIds.add(outputPort.getIdentifier());
                     });
@@ -652,13 +673,10 @@ public class FlowResource extends ApplicationResource {
             serviceFacade,
             revisions,
             lookup -> {
-                // ensure access to the flow
-                authorizeFlow();
-
                 // ensure access to every component being scheduled
                 componentsToSchedule.keySet().forEach(componentId -> {
                     final Authorizable connectable = lookup.getConnectable(componentId);
-                    connectable.authorize(authorizer, RequestAction.WRITE);
+                    connectable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
                 });
             },
             () -> serviceFacade.verifyScheduleComponents(id, state, componentRevisions.keySet()),
@@ -730,7 +748,7 @@ public class FlowResource extends ApplicationResource {
     // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
     @ApiOperation(
             value = "Gets the current status of this NiFi",
-            response = Entity.class,
+            response = ControllerStatusEntity.class,
             authorizations = {
                 @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
                 @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
@@ -760,6 +778,106 @@ public class FlowResource extends ApplicationResource {
         entity.setControllerStatus(controllerStatus);
 
         // generate the response
+        return clusterContext(generateOkResponse(entity)).build();
+    }
+
+    /**
+     * Retrieves the status for this NiFi.
+     *
+     * @return A controllerStatusEntity.
+     * @throws InterruptedException if interrupted
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("cluster/summary")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Gets the current status of this NiFi",
+            response = ControllerStatusEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response getClusterSummary() throws InterruptedException {
+
+        authorizeFlow();
+
+        final ClusterSummaryDTO clusterConfiguration = new ClusterSummaryDTO();
+        final ClusterCoordinator clusterCoordinator = getClusterCoordinator();
+
+        if (clusterCoordinator != null && clusterCoordinator.isConnected()) {
+            final Map<NodeConnectionState, List<NodeIdentifier>> stateMap = clusterCoordinator.getConnectionStates();
+            int totalNodeCount = 0;
+            for (final List<NodeIdentifier> nodeList : stateMap.values()) {
+                totalNodeCount += nodeList.size();
+            }
+            final List<NodeIdentifier> connectedNodeIds = stateMap.get(NodeConnectionState.CONNECTED);
+            final int connectedNodeCount = (connectedNodeIds == null) ? 0 : connectedNodeIds.size();
+
+            clusterConfiguration.setConnectedNodeCount(connectedNodeCount);
+            clusterConfiguration.setTotalNodeCount(totalNodeCount);
+            clusterConfiguration.setConnectedNodes(connectedNodeCount + " / " + totalNodeCount);
+        }
+
+        clusterConfiguration.setClustered(isClustered());
+        clusterConfiguration.setConnectedToCluster(isConnectedToCluster());
+
+        // create the response entity
+        final ClusteSummaryEntity entity = new ClusteSummaryEntity();
+        entity.setClusterSummary(clusterConfiguration);
+
+        // generate the response
+        return clusterContext(generateOkResponse(entity)).build();
+    }
+
+    /**
+     * Retrieves the controller level bulletins.
+     *
+     * @return A controllerBulletinsEntity.
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("controller/bulletins")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Retrieves Controller level bulletins",
+            response = ControllerBulletinsEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response getBulletins() {
+
+        authorizeFlow();
+
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.GET);
+        }
+
+        final ControllerBulletinsEntity entity = serviceFacade.getControllerBulletins();
         return clusterContext(generateOkResponse(entity)).build();
     }
 
@@ -1024,7 +1142,7 @@ public class FlowResource extends ApplicationResource {
     // --------------
 
     /**
-     * Retrieves all the of templates in this NiFi.
+     * Retrieves all the of bulletins in this NiFi.
      *
      * @param after Supporting querying for bulletins after a particular
      *            bulletin id.
@@ -1191,7 +1309,7 @@ public class FlowResource extends ApplicationResource {
         if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
+                final NodeResponse nodeResponse = replicateNodeResponse(HttpMethod.GET);
                 final ProcessorStatusEntity entity = (ProcessorStatusEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -1273,7 +1391,7 @@ public class FlowResource extends ApplicationResource {
         if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
+                final NodeResponse nodeResponse = replicateNodeResponse(HttpMethod.GET);
                 final PortStatusEntity entity = (PortStatusEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -1355,7 +1473,7 @@ public class FlowResource extends ApplicationResource {
         if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
+                final NodeResponse nodeResponse = replicateNodeResponse(HttpMethod.GET);
                 final PortStatusEntity entity = (PortStatusEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -1437,7 +1555,7 @@ public class FlowResource extends ApplicationResource {
         if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
+                final NodeResponse nodeResponse = replicateNodeResponse(HttpMethod.GET);
                 final RemoteProcessGroupStatusEntity entity = (RemoteProcessGroupStatusEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -1528,7 +1646,7 @@ public class FlowResource extends ApplicationResource {
         if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
+                final NodeResponse nodeResponse = replicateNodeResponse(HttpMethod.GET);
                 final ProcessGroupStatusEntity entity = (ProcessGroupStatusEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -1631,7 +1749,7 @@ public class FlowResource extends ApplicationResource {
         if (isReplicateRequest()) {
             // determine where this request should be sent
             if (clusterNodeId == null) {
-                final NodeResponse nodeResponse = getRequestReplicator().replicate(HttpMethod.GET, getAbsolutePath(), getRequestParameters(true), getHeaders()).awaitMergedResponse();
+                final NodeResponse nodeResponse = replicateNodeResponse(HttpMethod.GET);
                 final ConnectionStatusEntity entity = (ConnectionStatusEntity) nodeResponse.getUpdatedEntity();
 
                 // ensure there is an updated entity (result of merging) and prune the response as necessary
@@ -1878,6 +1996,405 @@ public class FlowResource extends ApplicationResource {
 
         // generate the response
         return clusterContext(generateOkResponse(entity)).build();
+    }
+
+    // -------
+    // history
+    // -------
+
+    /**
+     * Queries the history of this Controller.
+     *
+     * @param offset The offset into the data. This parameter is required and is
+     * used in conjunction with count.
+     * @param count The number of rows that should be returned. This parameter
+     * is required and is used in conjunction with page.
+     * @param sortColumn The column to sort on. This parameter is optional. If
+     * not specified the results will be returned with the most recent first.
+     * @param sortOrder The sort order.
+     * @param startDate The start date/time for the query. The start date/time
+     * must be formatted as 'MM/dd/yyyy HH:mm:ss'. This parameter is optional
+     * and must be specified in the timezone of the server. The server's
+     * timezone can be determined by inspecting the result of a status or
+     * history request.
+     * @param endDate The end date/time for the query. The end date/time must be
+     * formatted as 'MM/dd/yyyy HH:mm:ss'. This parameter is optional and must
+     * be specified in the timezone of the server. The server's timezone can be
+     * determined by inspecting the result of a status or history request.
+     * @param userIdentity The user name of the user who's actions are being
+     * queried. This parameter is optional.
+     * @param sourceId The id of the source being queried (usually a processor
+     * id). This parameter is optional.
+     * @return A historyEntity.
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("history")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Gets configuration history",
+            response = HistoryEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response queryHistory(
+            @ApiParam(
+                    value = "The offset into the result set.",
+                    required = true
+            )
+            @QueryParam("offset") IntegerParameter offset,
+            @ApiParam(
+                    value = "The number of actions to return.",
+                    required = true
+            )
+            @QueryParam("count") IntegerParameter count,
+            @ApiParam(
+                    value = "The field to sort on.",
+                    required = false
+            )
+            @QueryParam("sortColumn") String sortColumn,
+            @ApiParam(
+                    value = "The direction to sort.",
+                    required = false
+            )
+            @QueryParam("sortOrder") String sortOrder,
+            @ApiParam(
+                    value = "Include actions after this date.",
+                    required = false
+            )
+            @QueryParam("startDate") DateTimeParameter startDate,
+            @ApiParam(
+                    value = "Include actions before this date.",
+                    required = false
+            )
+            @QueryParam("endDate") DateTimeParameter endDate,
+            @ApiParam(
+                    value = "Include actions performed by this user.",
+                    required = false
+            )
+            @QueryParam("userIdentity") String userIdentity,
+            @ApiParam(
+                    value = "Include actions on this component.",
+                    required = false
+            )
+            @QueryParam("sourceId") String sourceId) {
+
+        authorizeFlow();
+
+        // ensure the page is specified
+        if (offset == null) {
+            throw new IllegalArgumentException("The desired offset must be specified.");
+        } else if (offset.getInteger() < 0) {
+            throw new IllegalArgumentException("The desired offset must be an integer value greater than or equal to 0.");
+        }
+
+        // ensure the row count is specified
+        if (count == null) {
+            throw new IllegalArgumentException("The desired row count must be specified.");
+        } else if (count.getInteger() < 1) {
+            throw new IllegalArgumentException("The desired row count must be an integer value greater than 0.");
+        }
+
+        // normalize the sort order
+        if (sortOrder != null) {
+            if (!sortOrder.equalsIgnoreCase("asc") && !sortOrder.equalsIgnoreCase("desc")) {
+                throw new IllegalArgumentException("The sort order must be 'asc' or 'desc'.");
+            }
+        }
+
+        // ensure the start and end dates are specified
+        if (endDate != null && startDate != null) {
+            if (endDate.getDateTime().before(startDate.getDateTime())) {
+                throw new IllegalArgumentException("The start date/time must come before the end date/time.");
+            }
+        }
+
+        // Note: History requests are not replicated throughout the cluster and are instead handled by the nodes independently
+
+        // create a history query
+        final HistoryQueryDTO query = new HistoryQueryDTO();
+        query.setSortColumn(sortColumn);
+        query.setSortOrder(sortOrder);
+        query.setOffset(offset.getInteger());
+        query.setCount(count.getInteger());
+
+        // optionally set the start date
+        if (startDate != null) {
+            query.setStartDate(startDate.getDateTime());
+        }
+
+        // optionally set the end date
+        if (endDate != null) {
+            query.setEndDate(endDate.getDateTime());
+        }
+
+        // optionally set the user id
+        if (userIdentity != null) {
+            query.setUserIdentity(userIdentity);
+        }
+
+        // optionally set the processor id
+        if (sourceId != null) {
+            query.setSourceId(sourceId);
+        }
+
+        // perform the query
+        final HistoryDTO history = serviceFacade.getActions(query);
+
+        // create the response entity
+        final HistoryEntity entity = new HistoryEntity();
+        entity.setHistory(history);
+
+        // generate the response
+        return generateOkResponse(entity).build();
+    }
+
+    /**
+     * Gets the action for the corresponding id.
+     *
+     * @param id The id of the action to get.
+     * @return An actionEntity.
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @Path("history/{id}")
+    @ApiOperation(
+            value = "Gets an action",
+            response = ActionEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response getAction(
+            @ApiParam(
+                    value = "The action id.",
+                    required = true
+            )
+            @PathParam("id") IntegerParameter id) {
+
+        authorizeFlow();
+
+        // ensure the id was specified
+        if (id == null) {
+            throw new IllegalArgumentException("The action id must be specified.");
+        }
+
+        // Note: History requests are not replicated throughout the cluster and are instead handled by the nodes independently
+
+        // get the specified action
+        final ActionDTO action = serviceFacade.getAction(id.getInteger());
+
+        // create the response entity
+        final ActionEntity entity = new ActionEntity();
+        entity.setAction(action);
+
+        // generate the response
+        return generateOkResponse(entity).build();
+    }
+
+    /**
+     * Gets the actions for the specified component.
+     *
+     * @param componentId The id of the component.
+     * @return An processorHistoryEntity.
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("history/components/{componentId}")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Gets configuration history for a processor",
+            response = ComponentHistoryEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response getComponentHistory(
+            @ApiParam(
+                    value = "The component id.",
+                    required = true
+            )
+            @PathParam("componentId") final String componentId) {
+
+        authorizeFlow();
+
+        // Note: History requests are not replicated throughout the cluster and are instead handled by the nodes independently
+
+        // create the response entity
+        final ComponentHistoryEntity entity = new ComponentHistoryEntity();
+        entity.setComponentHistory(serviceFacade.getComponentHistory(componentId));
+
+        // generate the response
+        return generateOkResponse(entity).build();
+    }
+
+    // ---------
+    // templates
+    // ---------
+
+    /**
+     * Retrieves all the of templates in this NiFi.
+     *
+     * @return A templatesEntity.
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("templates")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Gets all templates",
+            response = TemplatesEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
+                    @Authorization(value = "Administrator", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response getTemplates() {
+
+        if (isReplicateRequest()) {
+            return replicate(HttpMethod.GET);
+        }
+
+        // authorize access
+        authorizeFlow();
+
+        // get all the templates
+        final Set<TemplateEntity> templates = serviceFacade.getTemplates();
+        templateResource.populateRemainingTemplateEntitiesContent(templates);
+
+        // create the response entity
+        final TemplatesEntity entity = new TemplatesEntity();
+        entity.setTemplates(templates);
+        entity.setGenerated(new Date());
+
+        // generate the response
+        return clusterContext(generateOkResponse(entity)).build();
+    }
+
+    // --------------------
+    // search cluster nodes
+    // --------------------
+
+    /**
+     * Searches the cluster for a node with a given address.
+     *
+     * @param value Search value that will be matched against a node's address
+     * @return Nodes that match the specified criteria
+     */
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("cluster/search-results")
+    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
+    @ApiOperation(
+            value = "Searches the cluster for a node with the specified address",
+            response = ClusterSearchResultsEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
+                    @Authorization(value = "DFM", type = "ROLE_DFM"),
+                    @Authorization(value = "Admin", type = "ROLE_ADMIN")
+            }
+    )
+    @ApiResponses(
+            value = {
+                    @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+                    @ApiResponse(code = 401, message = "Client could not be authenticated."),
+                    @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+                    @ApiResponse(code = 404, message = "The specified resource could not be found."),
+                    @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+            }
+    )
+    public Response searchCluster(
+            @ApiParam(
+                    value = "Node address to search for.",
+                    required = true
+            )
+            @QueryParam("q") @DefaultValue(StringUtils.EMPTY) String value) {
+
+        authorizeFlow();
+
+        // ensure connected to the cluster
+        if (!isConnectedToCluster()) {
+            throw new IllegalClusterResourceRequestException("Only a node connected to a cluster can process the request.");
+        }
+
+        final List<NodeSearchResultDTO> nodeMatches = new ArrayList<>();
+
+        // get the nodes in the cluster
+        final ClusterDTO cluster = serviceFacade.getCluster();
+
+        // check each to see if it matches the search term
+        for (NodeDTO node : cluster.getNodes()) {
+            // ensure the node is connected
+            if (!NodeConnectionState.CONNECTED.name().equals(node.getStatus())) {
+                continue;
+            }
+
+            // determine the current nodes address
+            final String address = node.getAddress() + ":" + node.getApiPort();
+
+            // count the node if there is no search or it matches the address
+            if (StringUtils.isBlank(value) || StringUtils.containsIgnoreCase(address, value)) {
+                final NodeSearchResultDTO nodeMatch = new NodeSearchResultDTO();
+                nodeMatch.setId(node.getNodeId());
+                nodeMatch.setAddress(address);
+                nodeMatches.add(nodeMatch);
+            }
+        }
+
+        // build the response
+        ClusterSearchResultsEntity results = new ClusterSearchResultsEntity();
+        results.setNodeResults(nodeMatches);
+
+        // generate an 200 - OK response
+        return noCache(Response.ok(results)).build();
     }
 
     // setters

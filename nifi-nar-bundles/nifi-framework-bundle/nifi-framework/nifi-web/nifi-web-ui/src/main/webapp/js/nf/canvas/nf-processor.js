@@ -143,13 +143,13 @@ nf.Processor = (function () {
         // processor border authorization
         updated.select('rect.border')
             .classed('unauthorized', function (d) {
-                return d.accessPolicy.canRead === false;
+                return d.permissions.canRead === false;
             });
 
         // processor body authorization
         updated.select('rect.body')
             .classed('unauthorized', function (d) {
-                return d.accessPolicy.canRead === false;
+                return d.permissions.canRead === false;
             });
 
         updated.each(function (processorData) {
@@ -467,14 +467,14 @@ nf.Processor = (function () {
                         .attr({
                             'class': 'bulletin-icon',
                             'x': function (d) {
-                                return processorData.dimensions.width - 18;
+                                return processorData.dimensions.width - 17;
                             },
-                            'y': 18
+                            'y': 17
                         })
                         .text('\uf24a');
                 }
 
-                if (processorData.accessPolicy.canRead) {
+                if (processorData.permissions.canRead) {
                     // update the processor name
                     processor.select('text.processor-name')
                         .each(function (d) {
@@ -516,7 +516,7 @@ nf.Processor = (function () {
                 // populate the stats
                 processor.call(updateProcessorStatus);
             } else {
-                if (processorData.accessPolicy.canRead) {
+                if (processorData.permissions.canRead) {
                     // update the processor name
                     processor.select('text.processor-name')
                         .text(function (d) {
@@ -547,14 +547,15 @@ nf.Processor = (function () {
         // ---------------
 
         // update the processor color
-        updated.select('rect.body')
+        updated.select('text.processor-icon')
             .style('fill', function (d) {
-                if (!d.accessPolicy.canRead) {
-                    return null;
-                }
                 
                 // get the default color
                 var color = nf.Processor.defaultColor();
+                
+                if (!d.permissions.canRead) {
+                    return color;
+                }
 
                 // use the specified color if appropriate
                 if (nf.Common.isDefinedAndNotNull(d.component.style['background-color'])) {
@@ -614,7 +615,7 @@ nf.Processor = (function () {
                 }
 
                 // if there are validation errors generate a tooltip
-                if (d.accessPolicy.canRead && !nf.Common.isEmpty(d.component.validationErrors)) {
+                if (d.permissions.canRead && !nf.Common.isEmpty(d.component.validationErrors)) {
                     tip = d3.select('#processor-tooltips').append('div')
                         .attr('id', function () {
                             return 'run-status-tip-' + d.id;
@@ -862,9 +863,10 @@ nf.Processor = (function () {
          */
         reload: function (processor) {
             if (processorMap.has(processor.id)) {
+                var processorEntity = processorMap.get(processor.id);
                 return $.ajax({
                     type: 'GET',
-                    url: processor.uri,
+                    url: processorEntity.uri,
                     dataType: 'json'
                 }).done(function (response) {
                     nf.Processor.set(response);
@@ -923,7 +925,7 @@ nf.Processor = (function () {
          * Returns the default color that should be used when drawing a processor.
          */
         defaultColor: function () {
-            return '#ffffff';
+            return '#ad9897';
         }
     };
 }());

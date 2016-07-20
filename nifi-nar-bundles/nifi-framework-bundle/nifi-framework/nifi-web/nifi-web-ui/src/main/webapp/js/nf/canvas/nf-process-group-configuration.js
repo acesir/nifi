@@ -74,20 +74,23 @@ nf.ProcessGroupConfiguration = (function () {
             contentType: 'application/json'
         }).done(function (response) {
             // refresh the process group if necessary
-            if (response.accessPolicy.canRead && response.component.parentGroupId === nf.Canvas.getGroupId()) {
+            if (response.permissions.canRead && response.component.parentGroupId === nf.Canvas.getGroupId()) {
                 nf.ProcessGroup.set(response);
             }
 
             // show the result dialog
             nf.Dialog.showOkDialog({
-                dialogContent: 'Process group configuration successfully saved.',
-                overlayBackground: false
+                headerText: 'Process Group Configuration',
+                dialogContent: 'Process group configuration successfully saved.'
             });
 
             // update the click listener for the updated revision
             $('#process-group-configuration-save').off('click').on('click', function () {
                 saveConfiguration(response.revision.version, groupId);
             });
+
+            // inform Angular app values have changed
+            nf.ng.Bridge.digest();
         }).fail(nf.Common.handleAjaxError);
     };
 
@@ -120,7 +123,7 @@ nf.ProcessGroupConfiguration = (function () {
                 url: config.urls.api + '/process-groups/' + encodeURIComponent(groupId),
                 dataType: 'json'
             }).done(function (response) {
-                if (response.accessPolicy.canWrite) {
+                if (response.permissions.canWrite) {
                     var processGroup = response.component;
 
                     // populate the process group settings
@@ -132,10 +135,10 @@ nf.ProcessGroupConfiguration = (function () {
 
                     // register the click listener for the save button
                     $('#process-group-configuration-save').off('click').on('click', function () {
-                        saveConfiguration(response.revision.version, processGroupResponse.id);
+                        saveConfiguration(response.revision.version, response.id);
                     });
                 } else {
-                    if (response.accessPolicy.canRead) {
+                    if (response.permissions.canRead) {
                         // populate the process group settings
                         $('#read-only-process-group-name').removeClass('unset').text(response.component.name);
                         $('#read-only-process-group-comments').removeClass('unset').text(response.component.comments);
@@ -197,8 +200,9 @@ nf.ProcessGroupConfiguration = (function () {
         init: function () {
             // initialize the process group configuration tabs
             $('#process-group-configuration-tabs').tabbs({
-                tabStyle: 'settings-tab',
-                selectedTabStyle: 'settings-selected-tab',
+                tabStyle: 'tab',
+                selectedTabStyle: 'selected-tab',
+                scrollableTabContentStyle: 'scrollable',
                 tabs: [{
                     name: 'General',
                     tabContentId: 'general-process-group-configuration-tab-content'
@@ -210,8 +214,10 @@ nf.ProcessGroupConfiguration = (function () {
                     var tab = $(this).text();
                     if (tab === 'General') {
                         $('#add-process-group-configuration-controller-service').hide();
+                        $('#process-group-configuration-save').show();
                     } else {
                         $('#add-process-group-configuration-controller-service').show();
+                        $('#process-group-configuration-save').hide();
 
                         // update the tooltip on the button
                         $('#add-process-group-configuration-controller-service').attr('title', function () {
@@ -226,19 +232,11 @@ nf.ProcessGroupConfiguration = (function () {
                 }
             });
 
-            // settings refresh button...
-            nf.Common.addHoverEffect('#process-group-configuration-refresh-button', 'button-refresh', 'button-refresh-hover');
-
-            // handle window resizing
-            $(window).on('resize', function (e) {
-                nf.ProcessGroupConfiguration.resetTableSize();
-            });
-            
             // initialize each tab
             initGeneral();
             nf.ControllerServices.init(getControllerServicesTable());
         },
-        
+
         /**
          * Update the size of the grid based on its container's current size.
          */
@@ -252,12 +250,12 @@ nf.ProcessGroupConfiguration = (function () {
         showConfiguration: function (groupId) {
             // update the click listener
             $('#process-group-configuration-refresh-button').off('click').on('click', function () {
-                loadConfiguration(groupId).done(showConfiguration);
+                loadConfiguration(groupId);
             });
 
             // update the new controller service click listener
             $('#add-process-group-configuration-controller-service').off('click').on('click', function () {
-                var selectedTab = $('#process-group-configuration-tabs li.settings-selected-tab').text();
+                var selectedTab = $('#process-group-configuration-tabs li.selected-tab').text();
                 if (selectedTab === 'Controller Services') {
                     var controllerServicesUri = config.urls.api + '/process-groups/' + encodeURIComponent(groupId) + '/controller-services';
                     nf.ControllerServices.promptNewControllerService(controllerServicesUri, getControllerServicesTable());
@@ -266,6 +264,15 @@ nf.ProcessGroupConfiguration = (function () {
 
             // load the configuration
             return loadConfiguration(groupId).done(showConfiguration);
+        },
+
+        /**
+         * Loads the configuration for the specified process group.
+         *
+         * @param groupId
+         */
+        loadConfiguration: function (groupId) {
+            return loadConfiguration(groupId);
         },
 
         /**

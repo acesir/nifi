@@ -25,8 +25,6 @@ nf.Login = (function () {
 
     var config = {
         urls: {
-            identity: '../nifi-api/flow/identity',
-            users: '../nifi-api/controller/users',
             token: '../nifi-api/access/token',
             accessStatus: '../nifi-api/access',
             accessConfig: '../nifi-api/access/config'
@@ -125,8 +123,8 @@ nf.Login = (function () {
             });
         }).fail(function (xhr, status, error) {
             nf.Dialog.showOkDialog({
-                dialogContent: nf.Common.escapeHtml(xhr.responseText),
-                overlayBackground: false
+                headerText: 'Login',
+                dialogContent: nf.Common.escapeHtml(xhr.responseText)
             });
 
             // update the form visibility

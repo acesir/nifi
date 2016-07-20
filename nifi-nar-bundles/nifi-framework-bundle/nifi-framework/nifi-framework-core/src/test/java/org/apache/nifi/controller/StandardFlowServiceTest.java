@@ -16,21 +16,16 @@
  */
 package org.apache.nifi.controller;
 
-import static org.junit.Assert.fail;
-import static org.mockito.Mockito.mock;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
+import org.apache.commons.io.IOUtils;
 import org.apache.nifi.admin.service.AuditService;
-import org.apache.nifi.admin.service.KeyService;
+import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.cluster.protocol.StandardDataFlow;
 import org.apache.nifi.controller.repository.FlowFileEventRepository;
 import org.apache.nifi.controller.serialization.FlowSerializationException;
 import org.apache.nifi.controller.serialization.FlowSerializer;
 import org.apache.nifi.controller.serialization.StandardFlowSerializer;
+import org.apache.nifi.encrypt.StringEncryptor;
+import org.apache.nifi.events.VolatileBulletinRepository;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.web.api.dto.ConnectableDTO;
 import org.apache.nifi.web.api.dto.ConnectionDTO;
@@ -41,14 +36,19 @@ import org.apache.nifi.web.api.dto.ProcessGroupDTO;
 import org.apache.nifi.web.api.dto.ProcessorConfigDTO;
 import org.apache.nifi.web.api.dto.ProcessorDTO;
 import org.apache.nifi.web.revision.RevisionManager;
-import org.apache.commons.io.IOUtils;
-import org.apache.nifi.encrypt.StringEncryptor;
-import org.apache.nifi.events.VolatileBulletinRepository;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
 
 /**
  */
@@ -59,7 +59,7 @@ public class StandardFlowServiceTest {
     private FlowController flowController;
     private NiFiProperties properties;
     private FlowFileEventRepository mockFlowFileEventRepository;
-    private KeyService mockKeyService;
+    private Authorizer authorizer;
     private AuditService mockAuditService;
     private StringEncryptor mockEncryptor;
     private RevisionManager revisionManager;
@@ -73,17 +73,17 @@ public class StandardFlowServiceTest {
     public void setup() throws Exception {
         properties = NiFiProperties.getInstance();
         mockFlowFileEventRepository = mock(FlowFileEventRepository.class);
-        mockKeyService = mock(KeyService.class);
+        authorizer = mock(Authorizer.class);
         mockAuditService = mock(AuditService.class);
         revisionManager = mock(RevisionManager.class);
-        flowController = FlowController.createStandaloneInstance(mockFlowFileEventRepository, properties, mockKeyService, mockAuditService, mockEncryptor, new VolatileBulletinRepository());
-        flowService = StandardFlowService.createStandaloneInstance(flowController, properties, mockEncryptor, revisionManager);
+        flowController = FlowController.createStandaloneInstance(mockFlowFileEventRepository, properties, authorizer, mockAuditService, mockEncryptor, new VolatileBulletinRepository());
+        flowService = StandardFlowService.createStandaloneInstance(flowController, properties, mockEncryptor, revisionManager, authorizer);
     }
 
     @Test
     public void testLoadWithFlow() throws IOException {
         byte[] flowBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow.xml"));
-        flowService.load(new StandardDataFlow(flowBytes, null));
+        flowService.load(new StandardDataFlow(flowBytes, null, null));
 
         FlowSerializer serializer = new StandardFlowSerializer(mockEncryptor);
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -98,16 +98,16 @@ public class StandardFlowServiceTest {
     @Test(expected = FlowSerializationException.class)
     public void testLoadWithCorruptFlow() throws IOException {
         byte[] flowBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow-corrupt.xml"));
-        flowService.load(new StandardDataFlow(flowBytes, null));
+        flowService.load(new StandardDataFlow(flowBytes, null, null));
     }
 
     @Test
     public void testLoadExistingFlow() throws IOException {
         byte[] flowBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow.xml"));
-        flowService.load(new StandardDataFlow(flowBytes, null));
+        flowService.load(new StandardDataFlow(flowBytes, null, null));
 
         flowBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow-inheritable.xml"));
-        flowService.load(new StandardDataFlow(flowBytes, null));
+        flowService.load(new StandardDataFlow(flowBytes, null, null));
 
         FlowSerializer serializer = new StandardFlowSerializer(mockEncryptor);
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -121,11 +121,11 @@ public class StandardFlowServiceTest {
     @Test
     public void testLoadExistingFlowWithUninheritableFlow() throws IOException {
         byte[] originalBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow.xml"));
-        flowService.load(new StandardDataFlow(originalBytes, null));
+        flowService.load(new StandardDataFlow(originalBytes, null, null));
 
         try {
             byte[] updatedBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow-uninheritable.xml"));
-            flowService.load(new StandardDataFlow(updatedBytes, null));
+            flowService.load(new StandardDataFlow(updatedBytes, null, null));
             fail("should have thrown " + UninheritableFlowException.class);
         } catch (UninheritableFlowException ufe) {
 
@@ -143,11 +143,11 @@ public class StandardFlowServiceTest {
     @Test
     public void testLoadExistingFlowWithCorruptFlow() throws IOException {
         byte[] originalBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow.xml"));
-        flowService.load(new StandardDataFlow(originalBytes, null));
+        flowService.load(new StandardDataFlow(originalBytes, null, null));
 
         try {
             byte[] updatedBytes = IOUtils.toByteArray(StandardFlowServiceTest.class.getResourceAsStream("/conf/all-flow-corrupt.xml"));
-            flowService.load(new StandardDataFlow(updatedBytes, null));
+            flowService.load(new StandardDataFlow(updatedBytes, null, null));
             fail("should have thrown " + FlowSerializationException.class);
         } catch (FlowSerializationException ufe) {
 
@@ -237,7 +237,6 @@ public class StandardFlowServiceTest {
         Assert.assertEquals(expected.getParentGroupId(), actual.getParentGroupId());
         Assert.assertEquals(expected.getSelectedRelationships(), actual.getSelectedRelationships());
         assertEquals(expected.getSource(), actual.getSource());
-        Assert.assertEquals(expected.getUri(), actual.getUri());
     }
 
     private void assertEquals(ConnectableDTO expected, ConnectableDTO actual) {
@@ -259,7 +258,6 @@ public class StandardFlowServiceTest {
         Assert.assertEquals(expected.getId(), actual.getId());
         Assert.assertEquals(expected.getName(), actual.getName());
         Assert.assertEquals(expected.getParentGroupId(), actual.getParentGroupId());
-        Assert.assertEquals(expected.getUri(), actual.getUri());
     }
 
     private void assertEquals(LabelDTO expected, LabelDTO actual) {
@@ -271,7 +269,6 @@ public class StandardFlowServiceTest {
         Assert.assertEquals(expected.getLabel(), actual.getLabel());
         Assert.assertEquals(expected.getParentGroupId(), actual.getParentGroupId());
         Assert.assertEquals(expected.getStyle(), actual.getStyle());
-        Assert.assertEquals(expected.getUri(), actual.getUri());
     }
 
     private void assertEquals(ProcessorDTO expected, ProcessorDTO actual) {
@@ -283,7 +280,6 @@ public class StandardFlowServiceTest {
         Assert.assertEquals(expected.getName(), actual.getName());
         Assert.assertEquals(expected.getParentGroupId(), actual.getParentGroupId());
         Assert.assertEquals(expected.getStyle(), actual.getStyle());
-        Assert.assertEquals(expected.getUri(), actual.getUri());
         Assert.assertEquals(expected.getType(), actual.getType());
         Assert.assertEquals(expected.getState(), actual.getState());
         Assert.assertEquals(expected.getRelationships(), actual.getRelationships());

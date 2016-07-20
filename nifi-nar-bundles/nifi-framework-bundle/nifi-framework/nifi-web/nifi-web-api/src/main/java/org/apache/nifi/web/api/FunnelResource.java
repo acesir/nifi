@@ -16,8 +16,23 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.Set;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.api.dto.FunnelDTO;
+import org.apache.nifi.web.api.entity.FunnelEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
@@ -33,25 +48,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.FunnelDTO;
-import org.apache.nifi.web.api.entity.FunnelEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Funnel.
@@ -86,32 +83,8 @@ public class FunnelResource extends ApplicationResource {
      * @return funnel
      */
     public FunnelEntity populateRemainingFunnelEntityContent(FunnelEntity funnelEntity) {
-        if (funnelEntity.getComponent() != null) {
-            populateRemainingFunnelContent(funnelEntity.getComponent());
-        }
+        funnelEntity.setUri(generateResourceUri("funnels", funnelEntity.getId()));
         return funnelEntity;
-    }
-
-    /**
-     * Populates the uri for the specified funnels.
-     *
-     * @param funnels funnels
-     * @return funnels
-     */
-    public Set<FunnelDTO> populateRemainingFunnelsContent(Set<FunnelDTO> funnels) {
-        for (FunnelDTO funnel : funnels) {
-            populateRemainingFunnelContent(funnel);
-        }
-        return funnels;
-    }
-
-    /**
-     * Populates the uri for the specified funnel.
-     */
-    public FunnelDTO populateRemainingFunnelContent(FunnelDTO funnel) {
-        // populate the funnel href
-        funnel.setUri(generateResourceUri("funnels", funnel.getId()));
-        return funnel;
     }
 
     /**
@@ -157,7 +130,7 @@ public class FunnelResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable funnel = lookup.getFunnel(id);
-            funnel.authorize(authorizer, RequestAction.READ);
+            funnel.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the funnel
@@ -233,23 +206,16 @@ public class FunnelResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable funnel = lookup.getFunnel(id);
-                funnel.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getFunnel(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             null,
             () -> {
                 // update the funnel
-                final UpdateResult<FunnelEntity> updateResult = serviceFacade.updateFunnel(revision, requestFunnelDTO);
-
-                // get the results
-                final FunnelEntity entity = updateResult.getResult();
+                final FunnelEntity entity = serviceFacade.updateFunnel(revision, requestFunnelDTO);
                 populateRemainingFunnelEntityContent(entity);
 
-                if (updateResult.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }
@@ -316,7 +282,7 @@ public class FunnelResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable funnel = lookup.getFunnel(id);
-                funnel.authorize(authorizer, RequestAction.READ);
+                funnel.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteFunnel(id),
             () -> {

@@ -17,47 +17,57 @@
 
 package org.apache.nifi.cluster.coordination.http.endpoints;
 
+import org.apache.nifi.cluster.coordination.http.EndpointResponseMerger;
+import org.apache.nifi.cluster.manager.ControllerServicesEntityMerger;
 import org.apache.nifi.cluster.manager.NodeResponse;
 import org.apache.nifi.cluster.protocol.NodeIdentifier;
 import org.apache.nifi.web.api.entity.ControllerServiceEntity;
 import org.apache.nifi.web.api.entity.ControllerServicesEntity;
 
 import java.net.URI;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.regex.Pattern;
 
-public class ControllerServicesEndpointMerger extends AbstractMultiEntityEndpoint<ControllerServicesEntity, ControllerServiceEntity> {
-    public static final String CONTROLLER_SERVICES_URI = "/nifi-api/controller-services/node";
+public class ControllerServicesEndpointMerger implements EndpointResponseMerger {
+    public static final String CONTROLLER_SERVICES_URI = "/nifi-api/flow/controller/controller-services";
+    public static final Pattern PROCESS_GROUPS_CONTROLLER_SERVICES_URI = Pattern.compile("/nifi-api/flow/process-groups/(?:(?:root)|(?:[a-f0-9\\-]{36}))/controller-services");
 
     @Override
     public boolean canHandle(URI uri, String method) {
-        return "GET".equalsIgnoreCase(method) && CONTROLLER_SERVICES_URI.equals(uri.getPath());
+        return "GET".equalsIgnoreCase(method) && (CONTROLLER_SERVICES_URI.equals(uri.getPath()) || PROCESS_GROUPS_CONTROLLER_SERVICES_URI.matcher(uri.getPath()).matches());
     }
 
     @Override
-    protected Class<ControllerServicesEntity> getEntityClass() {
-        return ControllerServicesEntity.class;
-    }
+    public final NodeResponse merge(final URI uri, final String method, final Set<NodeResponse> successfulResponses, final Set<NodeResponse> problematicResponses, final NodeResponse clientResponse) {
+        if (!canHandle(uri, method)) {
+            throw new IllegalArgumentException("Cannot use Endpoint Mapper of type " + getClass().getSimpleName() + " to map responses for URI " + uri + ", HTTP Method " + method);
+        }
 
-    @Override
-    protected Set<ControllerServiceEntity> getDtos(ControllerServicesEntity entity) {
-        return entity.getControllerServices();
-    }
+        final ControllerServicesEntity responseEntity = clientResponse.getClientResponse().getEntity(ControllerServicesEntity.class);
+        final Set<ControllerServiceEntity> controllerServiceEntities = responseEntity.getControllerServices();
 
-    @Override
-    protected String getComponentId(ControllerServiceEntity entity) {
-        return entity.getComponent().getId();
-    }
+        final Map<String, Map<NodeIdentifier, ControllerServiceEntity>> entityMap = new HashMap<>();
+        for (final NodeResponse nodeResponse : successfulResponses) {
+            final ControllerServicesEntity nodeResponseEntity = nodeResponse == clientResponse ? responseEntity : nodeResponse.getClientResponse().getEntity(ControllerServicesEntity.class);
+            final Set<ControllerServiceEntity> nodeControllerServiceEntities = nodeResponseEntity.getControllerServices();
 
-    @Override
-    protected void mergeResponses(ControllerServiceEntity entity, Map<NodeIdentifier, ControllerServiceEntity> entityMap,
-                                  Set<NodeResponse> successfulResponses, Set<NodeResponse> problematicResponses) {
+            for (final ControllerServiceEntity nodeControllerServiceEntity : nodeControllerServiceEntities) {
+                final NodeIdentifier nodeId = nodeResponse.getNodeId();
+                Map<NodeIdentifier, ControllerServiceEntity> innerMap = entityMap.get(nodeId);
+                if (innerMap == null) {
+                    innerMap = new HashMap<>();
+                    entityMap.put(nodeControllerServiceEntity.getId(), innerMap);
+                }
 
-        new ControllerServiceEndpointMerger().mergeResponses(
-            entity.getComponent(),
-            entityMap.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().getComponent())),
-            successfulResponses,
-            problematicResponses);
+                innerMap.put(nodeResponse.getNodeId(), nodeControllerServiceEntity);
+            }
+        }
+
+        ControllerServicesEntityMerger.mergeControllerServices(controllerServiceEntities, entityMap);
+
+        // create a new client response
+        return new NodeResponse(clientResponse, responseEntity);
     }
 }

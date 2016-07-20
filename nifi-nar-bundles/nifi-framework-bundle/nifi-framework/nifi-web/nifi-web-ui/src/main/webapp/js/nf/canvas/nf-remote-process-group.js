@@ -168,13 +168,13 @@ nf.RemoteProcessGroup = (function () {
         // remote process group border authorization
         updated.select('rect.border')
             .classed('unauthorized', function (d) {
-                return d.accessPolicy.canRead === false;
+                return d.permissions.canRead === false;
             });
 
         // remote process group body authorization
         updated.select('rect.body')
             .classed('unauthorized', function (d) {
-                return d.accessPolicy.canRead === false;
+                return d.permissions.canRead === false;
             });
 
         updated.each(function (remoteProcessGroupData) {
@@ -493,7 +493,7 @@ nf.RemoteProcessGroup = (function () {
                         .text('\uf24a');
                 }
 
-                if (remoteProcessGroupData.accessPolicy.canRead) {
+                if (remoteProcessGroupData.permissions.canRead) {
                     // remote process group uri
                     details.select('text.remote-process-group-uri')
                         .each(function (d) {
@@ -612,7 +612,7 @@ nf.RemoteProcessGroup = (function () {
                 // populate the stats
                 remoteProcessGroup.call(updateProcessGroupStatus);
             } else {
-                if (remoteProcessGroupData.accessPolicy.canRead) {
+                if (remoteProcessGroupData.permissions.canRead) {
                     // update the process group name
                     remoteProcessGroup.select('text.remote-process-group-name')
                         .text(function (d) {
@@ -670,7 +670,7 @@ nf.RemoteProcessGroup = (function () {
         // received ports value
         updated.select('text.remote-process-group-received tspan.ports')
             .text(function (d) {
-                return d.inputPortCount + ' ' + String.fromCharCode(8594) + ' ';
+                return d.outputPortCount + ' ' + String.fromCharCode(8594) + ' ';
             });
 
         // received count value
@@ -694,10 +694,10 @@ nf.RemoteProcessGroup = (function () {
         updated.select('text.remote-process-group-transmission-status')
             .text(function (d) {
                 var icon = '';
-                if (!nf.Common.isEmpty(d.status.aggregateSnapshot.authorizationIssues)) {
-                    icon = '\uf071';
-                } else if (d.accessPolicy.canRead) {
-                    if (d.component.transmitting === true) {
+                if (d.permissions.canRead) {
+                    if (!nf.Common.isEmpty(d.component.authorizationIssues)) {
+                        icon = '\uf071';
+                    } else if (d.component.transmitting === true) {
                         icon = '\uf140';
                     } else {
                         icon = '\ue80a';
@@ -707,15 +707,17 @@ nf.RemoteProcessGroup = (function () {
             })
             .attr('font-family', function (d) {
                 var family = '';
-                if (!nf.Common.isEmpty(d.status.aggregateSnapshot.authorizationIssues) || (d.accessPolicy.canRead && d.component.transmitting)) {
-                    family = 'FontAwesome';
-                } else {
-                    family = 'flowfont';
+                if (d.permissions.canRead) {
+                    if (!nf.Common.isEmpty(d.component.authorizationIssues) || d.component.transmitting) {
+                        family = 'FontAwesome';
+                    } else {
+                        family = 'flowfont';
+                    }
                 }
                 return family;
             })
             .classed('has-authorization-errors', function (d) {
-                return !nf.Common.isEmpty(d.status.aggregateSnapshot.authorizationIssues);
+                return d.permissions.canRead && !nf.Common.isEmpty(d.component.authorizationIssues);
             })
             .each(function (d) {
                 // remove the existing tip if necessary
@@ -725,14 +727,14 @@ nf.RemoteProcessGroup = (function () {
                 }
 
                 // if there are validation errors generate a tooltip
-                if (!nf.Common.isEmpty(d.status.aggregateSnapshot.authorizationIssues)) {
+                if (d.permissions.canRead && !nf.Common.isEmpty(d.component.authorizationIssues)) {
                     tip = d3.select('#remote-process-group-tooltips').append('div')
                         .attr('id', function () {
                             return 'authorization-issues-' + d.id;
                         })
                         .attr('class', 'tooltip nifi-tooltip')
                         .html(function () {
-                            var list = nf.Common.formatUnorderedList(d.status.aggregateSnapshot.authorizationIssues);
+                            var list = nf.Common.formatUnorderedList(d.component.authorizationIssues);
                             if (list === null || list.length === 0) {
                                 return '';
                             } else {
@@ -932,9 +934,10 @@ nf.RemoteProcessGroup = (function () {
          */
         reload: function (remoteProcessGroup) {
             if (remoteProcessGroupMap.has(remoteProcessGroup.id)) {
+                var remoteProcessGroupEntity = remoteProcessGroupMap.get(remoteProcessGroup.id);
                 return $.ajax({
                     type: 'GET',
-                    url: remoteProcessGroup.uri,
+                    url: remoteProcessGroupEntity.uri,
                     dataType: 'json'
                 }).done(function (response) {
                     nf.RemoteProcessGroup.set(response);
@@ -942,7 +945,7 @@ nf.RemoteProcessGroup = (function () {
                     // reload the group's connections
                     var connections = nf.Connection.getComponentConnections(remoteProcessGroup.id);
                     $.each(connections, function (_, connection) {
-                        if (connection.accessPolicy.canRead) {
+                        if (connection.permissions.canRead) {
                             nf.Connection.reload(connection.component);
                         }
                     });

@@ -17,11 +17,14 @@
 package org.apache.nifi.web.api.entity;
 
 import com.wordnik.swagger.annotations.ApiModelProperty;
-import org.apache.nifi.web.api.dto.AccessPolicyDTO;
 import org.apache.nifi.web.api.dto.ControllerConfigurationDTO;
+import org.apache.nifi.web.api.dto.PermissionsDTO;
 import org.apache.nifi.web.api.dto.RevisionDTO;
+import org.apache.nifi.web.api.dto.util.TimeAdapter;
 
 import javax.xml.bind.annotation.XmlRootElement;
+import javax.xml.bind.annotation.adapters.XmlJavaTypeAdapter;
+import java.util.Date;
 
 /**
  * A serialized representation of this class can be placed in the entity body of a request or response to or from the API. This particular entity holds a reference to a ControllerConfigurationDTO.
@@ -29,9 +32,10 @@ import javax.xml.bind.annotation.XmlRootElement;
 @XmlRootElement(name = "controllerConfigurationEntity")
 public class ControllerConfigurationEntity extends Entity {
 
-    private ControllerConfigurationDTO config;
+    private Date currentTime;
+    private ControllerConfigurationDTO controllerConfiguration;
     private RevisionDTO revision;
-    private AccessPolicyDTO accessPolicy;
+    private PermissionsDTO permissions;
 
     /**
      * @return revision for this request/response
@@ -59,27 +63,42 @@ public class ControllerConfigurationEntity extends Entity {
     @ApiModelProperty(
         value = "The controller configuration."
     )
-    public ControllerConfigurationDTO getConfig() {
-        return config;
+    public ControllerConfigurationDTO getControllerConfiguration() {
+        return controllerConfiguration;
     }
 
-    public void setConfig(ControllerConfigurationDTO config) {
-        this.config = config;
+    public void setControllerConfiguration(ControllerConfigurationDTO controllerConfiguration) {
+        this.controllerConfiguration = controllerConfiguration;
     }
 
     /**
-     * The access policy for this component.
+     * The permissions for this component.
      *
-     * @return The access policy
+     * @return The permissions
      */
     @ApiModelProperty(
-            value = "The access policy for the controller."
+            value = "The permissions for this component."
     )
-    public AccessPolicyDTO getAccessPolicy() {
-        return accessPolicy;
+    public PermissionsDTO getPermissions() {
+        return permissions;
     }
 
-    public void setAccessPolicy(AccessPolicyDTO accessPolicy) {
-        this.accessPolicy = accessPolicy;
+    public void setPermissions(PermissionsDTO permissions) {
+        this.permissions = permissions;
+    }
+
+    /**
+     * @return current time on the server
+     */
+    @XmlJavaTypeAdapter(TimeAdapter.class)
+    @ApiModelProperty(
+            value = "The current time on the system."
+    )
+    public Date getCurrentTime() {
+        return currentTime;
+    }
+
+    public void setCurrentTime(Date currentTime) {
+        this.currentTime = currentTime;
     }
 }

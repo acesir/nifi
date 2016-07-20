@@ -16,8 +16,23 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.Set;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.api.dto.ConnectionDTO;
+import org.apache.nifi.web.api.entity.ConnectionEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
@@ -33,27 +48,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.ConnectionDTO;
-import org.apache.nifi.web.api.dto.FlowFileSummaryDTO;
-import org.apache.nifi.web.api.dto.ListingRequestDTO;
-import org.apache.nifi.web.api.entity.ConnectionEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Connection.
@@ -88,67 +83,8 @@ public class ConnectionResource extends ApplicationResource {
      * @return dto
      */
     public ConnectionEntity populateRemainingConnectionEntityContent(ConnectionEntity connectionEntity) {
-        if (connectionEntity.getComponent() != null) {
-            populateRemainingConnectionContent(connectionEntity.getComponent());
-        }
+       connectionEntity.setUri(generateResourceUri("connections", connectionEntity.getId()));
         return connectionEntity;
-    }
-
-    /**
-     * Populate the URIs for the specified connections.
-     *
-     * @param connections connections
-     * @return dtos
-     */
-    public Set<ConnectionDTO> populateRemainingConnectionsContent(Set<ConnectionDTO> connections) {
-        for (ConnectionDTO connection : connections) {
-            populateRemainingConnectionContent(connection);
-        }
-        return connections;
-    }
-
-    /**
-     * Populate the URIs for the specified connection.
-     *
-     * @param connection connection
-     * @return dto
-     */
-    public ConnectionDTO populateRemainingConnectionContent(ConnectionDTO connection) {
-        // populate the remaining properties
-        connection.setUri(generateResourceUri("connections", connection.getId()));
-        return connection;
-    }
-
-    /**
-     * Populate the URIs for the specified flowfile listing.
-     *
-     * @param connectionId connection
-     * @param flowFileListing flowfile listing
-     * @return dto
-     */
-    public ListingRequestDTO populateRemainingFlowFileListingContent(final String connectionId, final ListingRequestDTO flowFileListing) {
-        // uri of the listing
-        flowFileListing.setUri(generateResourceUri("connections", connectionId, "listing-requests", flowFileListing.getId()));
-
-        // uri of each flowfile
-        if (flowFileListing.getFlowFileSummaries() != null) {
-            for (FlowFileSummaryDTO flowFile : flowFileListing.getFlowFileSummaries()) {
-                populateRemainingFlowFileContent(connectionId, flowFile);
-            }
-        }
-        return flowFileListing;
-    }
-
-    /**
-     * Populate the URIs for the specified flowfile.
-     *
-     * @param connectionId the connection id
-     * @param flowFile the flowfile
-     * @return the dto
-     */
-    public FlowFileSummaryDTO populateRemainingFlowFileContent(final String connectionId, final FlowFileSummaryDTO flowFile) {
-        flowFile.setUri(generateResourceUri("connections", connectionId, "flowfiles", flowFile.getUuid()));
-        return flowFile;
     }
 
     /**
@@ -195,7 +131,7 @@ public class ConnectionResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable conn = lookup.getConnection(id);
-            conn.authorize(authorizer, RequestAction.READ);
+            conn.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the specified relationship
@@ -273,23 +209,16 @@ public class ConnectionResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable conn = lookup.getConnection(id);
-                conn.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getConnection(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateConnection(connection),
             () -> {
-                // update the relationship target
-                final UpdateResult<ConnectionEntity> updateResult = serviceFacade.updateConnection(revision, connection);
-
-                final ConnectionEntity entity = updateResult.getResult();
+                final ConnectionEntity entity = serviceFacade.updateConnection(revision, connection);
                 populateRemainingConnectionEntityContent(entity);
 
                 // generate the response
-                if (updateResult.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             });
     }
 
@@ -356,7 +285,7 @@ public class ConnectionResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable conn = lookup.getConnection(id);
-                conn.authorize(authorizer, RequestAction.WRITE);
+                conn.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteConnection(id),
             () -> {

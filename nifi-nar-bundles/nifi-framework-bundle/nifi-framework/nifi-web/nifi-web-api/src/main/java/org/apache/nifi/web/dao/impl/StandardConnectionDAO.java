@@ -16,8 +16,14 @@
  */
 package org.apache.nifi.web.dao.impl;
 
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.AccessDeniedException;
+import org.apache.nifi.authorization.AuthorizationRequest;
+import org.apache.nifi.authorization.AuthorizationResult;
+import org.apache.nifi.authorization.AuthorizationResult.Result;
 import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.UserContextKeys;
 import org.apache.nifi.authorization.user.NiFiUser;
 import org.apache.nifi.authorization.user.NiFiUserUtils;
 import org.apache.nifi.connectable.Connectable;
@@ -53,6 +59,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -294,7 +302,7 @@ public class StandardConnectionDAO extends ComponentDAO implements ConnectionDAO
         }
 
         // ensure the user has write access to the source component
-        source.authorize(authorizer, RequestAction.WRITE);
+        source.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
 
         // find the destination
         final Connectable destination;
@@ -320,7 +328,7 @@ public class StandardConnectionDAO extends ComponentDAO implements ConnectionDAO
         }
 
         // ensure the user has write access to the source component
-        destination.authorize(authorizer, RequestAction.WRITE);
+        destination.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
 
         // determine the relationships
         final Set<String> relationships = new HashSet<>();
@@ -407,6 +415,14 @@ public class StandardConnectionDAO extends ComponentDAO implements ConnectionDAO
             // ensure there was no validation errors
             if (!validationErrors.isEmpty()) {
                 throw new ValidationException(validationErrors);
+            }
+
+            // If destination is changing, ensure that current destination is not running. This check is done here, rather than
+            // in the Connection object itself because the Connection object itself does not know which updates are to occur and
+            // we don't want to prevent updating things like the connection name or backpressure just because the destination is running
+            final Connectable destination = connection.getDestination();
+            if (destination != null && destination.isRunning() && destination.getConnectableType() != ConnectableType.FUNNEL && destination.getConnectableType() != ConnectableType.INPUT_PORT) {
+                throw new ValidationException(Collections.singletonList("Cannot change the destination of connection because the current destination is running"));
             }
 
             // verify that this connection supports modification
@@ -572,9 +588,6 @@ public class StandardConnectionDAO extends ComponentDAO implements ConnectionDAO
     public DownloadableContent getContent(String id, String flowFileUuid, String requestUri) {
         try {
             final NiFiUser user = NiFiUserUtils.getNiFiUser();
-            if (user == null) {
-                throw new WebApplicationException(new Throwable("Unable to access details for current user."));
-            }
 
             final Connection connection = locateConnection(id);
             final FlowFileQueue queue = connection.getFlowFileQueue();
@@ -584,15 +597,36 @@ public class StandardConnectionDAO extends ComponentDAO implements ConnectionDAO
                 throw new ResourceNotFoundException(String.format("The FlowFile with UUID %s is no longer in the active queue.", flowFileUuid));
             }
 
+            final Map<String, String> attributes = flowFile.getAttributes();
+
             // calculate the dn chain
             final List<String> dnChain = ProxiedEntitiesUtils.buildProxiedEntitiesChain(user);
+            dnChain.forEach(identity -> {
+                // build the request
+                final Map<String,String> userContext;
+                if (!StringUtils.isBlank(user.getClientAddress())) {
+                    userContext = new HashMap<>();
+                    userContext.put(UserContextKeys.CLIENT_ADDRESS.name(), user.getClientAddress());
+                } else {
+                    userContext = null;
+                }
 
-            // TODO - ensure the users in this chain are allowed to download this content
-            final Map<String, String> attributes = flowFile.getAttributes();
-//            final DownloadAuthorization downloadAuthorization = keyService.authorizeDownload(dnChain, attributes);
-//            if (!downloadAuthorization.isApproved()) {
-//                throw new AccessDeniedException(downloadAuthorization.getExplanation());
-//            }
+                final AuthorizationRequest request = new AuthorizationRequest.Builder()
+                        .identity(identity)
+                        .anonymous(user.isAnonymous())
+                        .accessAttempt(false)
+                        .action(RequestAction.WRITE)
+                        .resource(connection.getResource())
+                        .resourceContext(attributes)
+                        .userContext(userContext)
+                        .build();
+
+                // perform the authorization
+                final AuthorizationResult result = authorizer.authorize(request);
+                if (!Result.Approved.equals(result.getResult())) {
+                    throw new AccessDeniedException(result.getExplanation());
+                }
+            });
 
             // get the filename and fall back to the identifier (should never happen)
             String filename = attributes.get(CoreAttributes.FILENAME.key());

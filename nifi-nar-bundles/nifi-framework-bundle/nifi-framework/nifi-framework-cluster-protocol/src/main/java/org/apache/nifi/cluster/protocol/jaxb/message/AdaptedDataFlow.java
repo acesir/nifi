@@ -22,11 +22,7 @@ public class AdaptedDataFlow {
 
     private byte[] flow;
     private byte[] snippets;
-
-    private boolean autoStartProcessors;
-
-    public AdaptedDataFlow() {
-    }
+    private byte[] authorizerFingerprint;
 
     public byte[] getFlow() {
         return flow;
@@ -44,12 +40,12 @@ public class AdaptedDataFlow {
         this.snippets = snippets;
     }
 
-    public boolean isAutoStartProcessors() {
-        return autoStartProcessors;
+    public byte[] getAuthorizerFingerprint() {
+        return authorizerFingerprint;
     }
 
-    public void setAutoStartProcessors(boolean runningAllProcessors) {
-        this.autoStartProcessors = runningAllProcessors;
+    public void setAuthorizerFingerprint(byte[] authorizerFingerprint) {
+        this.authorizerFingerprint = authorizerFingerprint;
     }
 
 }

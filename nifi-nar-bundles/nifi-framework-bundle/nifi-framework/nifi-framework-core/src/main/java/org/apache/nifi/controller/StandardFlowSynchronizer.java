@@ -17,6 +17,8 @@
 package org.apache.nifi.controller;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.nifi.authorization.AbstractPolicyBasedAuthorizer;
+import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.cluster.protocol.DataFlow;
 import org.apache.nifi.cluster.protocol.StandardDataFlow;
 import org.apache.nifi.connectable.Connectable;
@@ -94,10 +96,12 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -138,7 +142,6 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
     @Override
     public void sync(final FlowController controller, final DataFlow proposedFlow, final StringEncryptor encryptor)
             throws FlowSerializationException, UninheritableFlowException, FlowSynchronizationException {
-        // TODO - Include templates
 
         // handle corner cases involving no proposed flow
         if (proposedFlow == null) {
@@ -209,19 +212,40 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
         logger.trace("Exporting snippets from controller");
         final byte[] existingSnippets = controller.getSnippetManager().export();
 
-        final DataFlow existingDataFlow = new StandardDataFlow(existingFlow, existingSnippets);
+        logger.trace("Getting Authorizer fingerprint from controller");
+
+        final byte[] existingAuthFingerprint;
+        final AbstractPolicyBasedAuthorizer policyBasedAuthorizer;
+        final Authorizer authorizer = controller.getAuthorizer();
+
+        if (authorizer instanceof AbstractPolicyBasedAuthorizer) {
+            policyBasedAuthorizer = (AbstractPolicyBasedAuthorizer) authorizer;
+            existingAuthFingerprint = policyBasedAuthorizer.getFingerprint().getBytes(StandardCharsets.UTF_8);
+        } else {
+            existingAuthFingerprint = null;
+            policyBasedAuthorizer = null;
+        }
+
+        final DataFlow existingDataFlow = new StandardDataFlow(existingFlow, existingSnippets, existingAuthFingerprint);
 
         // check that the proposed flow is inheritable by the controller
         try {
             if (!existingFlowEmpty) {
                 logger.trace("Checking flow inheritability");
-                final String problemInheriting = checkFlowInheritability(existingDataFlow, proposedFlow, controller);
-                if (problemInheriting != null) {
-                    throw new UninheritableFlowException("Proposed configuration is not inheritable by the flow controller because of flow differences: " + problemInheriting);
+                final String problemInheritingFlow = checkFlowInheritability(existingDataFlow, proposedFlow, controller);
+                if (problemInheritingFlow != null) {
+                    throw new UninheritableFlowException("Proposed configuration is not inheritable by the flow controller because of flow differences: " + problemInheritingFlow);
                 }
             }
         } catch (final FingerprintException fe) {
             throw new FlowSerializationException("Failed to generate flow fingerprints", fe);
+        }
+
+        logger.trace("Checking authorizer inheritability");
+
+        final AuthorizerInheritability authInheritability = checkAuthorizerInheritability(existingDataFlow, proposedFlow);
+        if (!authInheritability.isInheritable() && authInheritability.getReason() != null) {
+            throw new UninheritableFlowException("Proposed Authorizer is not inheritable by the flow controller because of Authorizer differences: " + authInheritability.getReason());
         }
 
         // create document by parsing proposed flow bytes
@@ -258,6 +282,20 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
                     } else {
                         logger.trace("Updating root process group");
                         rootGroup = updateProcessGroup(controller, /* parent group */ null, rootGroupElement, encryptor, encodingVersion);
+                    }
+
+                    // If there are any Templates that do not exist in the Proposed Flow that do exist in the 'existing flow', we need
+                    // to ensure that we also add those to the appropriate Process Groups, so that we don't lose them.
+                    final Document existingFlowConfiguration = parseFlowBytes(existingFlow);
+                    if (existingFlowConfiguration != null) {
+                        final Element existingRootElement = (Element) existingFlowConfiguration.getElementsByTagName("flowController").item(0);
+                        if (existingRootElement != null) {
+                            final Element existingRootGroupElement = (Element) existingRootElement.getElementsByTagName("rootGroup").item(0);
+                            if (existingRootElement != null) {
+                                final FlowEncodingVersion existingEncodingVersion = FlowEncodingVersion.parse(existingFlowConfiguration.getDocumentElement());
+                                addLocalTemplates(existingRootGroupElement, rootGroup, existingEncodingVersion);
+                            }
+                        }
                     }
 
                     final Element controllerServicesElement = DomUtils.getChild(rootElement, "controllerServices");
@@ -308,13 +346,43 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
                 }
             }
 
-            logger.debug("Finished synching flows");
+            // if auths are inheritable and we have a policy based authorizer, then inherit
+            if (authInheritability.isInheritable() && policyBasedAuthorizer != null) {
+                logger.trace("Inheriting authorizations");
+                final String proposedAuthFingerprint = new String(proposedFlow.getAuthorizerFingerprint(), StandardCharsets.UTF_8);
+                policyBasedAuthorizer.inheritFingerprint(proposedAuthFingerprint);
+            }
+
+            logger.debug("Finished syncing flows");
         } catch (final Exception ex) {
             throw new FlowSynchronizationException(ex);
         }
     }
 
-    void scaleRootGroup(ProcessGroup rootGroup, FlowEncodingVersion encodingVersion) {
+    private void addLocalTemplates(final Element processGroupElement, final ProcessGroup processGroup, final FlowEncodingVersion encodingVersion) {
+        // Replace the templates with those from the proposed flow
+        final List<Element> templateNodeList = getChildrenByTagName(processGroupElement, "template");
+        if (templateNodeList != null) {
+            for (final Element templateElement : templateNodeList) {
+                final TemplateDTO templateDto = TemplateUtils.parseDto(templateElement);
+                final Template template = new Template(templateDto);
+
+                // If the Process Group does not have the template, add it.
+                if (processGroup.getTemplate(template.getIdentifier()) == null) {
+                    processGroup.addTemplate(template);
+                }
+            }
+        }
+
+        final List<Element> childGroupElements = getChildrenByTagName(processGroupElement, "processGroup");
+        for (final Element childGroupElement : childGroupElements) {
+            final String childGroupId = getString(childGroupElement, "id");
+            final ProcessGroup childGroup = processGroup.getProcessGroup(childGroupId);
+            addLocalTemplates(childGroupElement, childGroup, encodingVersion);
+        }
+    }
+
+    void scaleRootGroup(final ProcessGroup rootGroup, final FlowEncodingVersion encodingVersion) {
         if (encodingVersion == null || encodingVersion.getMajorVersion() < 1) {
             // Calculate new Positions if the encoding version of the flow is older than 1.0.
             PositionScaler.scale(rootGroup, 1.5, 1.34);
@@ -703,12 +771,17 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
 
         // Replace the templates with those from the proposed flow
         final List<Element> templateNodeList = getChildrenByTagName(processGroupElement, "template");
-        for (final Template template : processGroup.getTemplates()) {
-            processGroup.removeTemplate(template);
-        }
         for (final Element templateElement : templateNodeList) {
             final TemplateDTO templateDto = TemplateUtils.parseDto(templateElement);
             final Template template = new Template(templateDto);
+
+            // If the Process Group already has the template, remove it and add it again. We do this
+            // to ensure that all of the nodes have the same view of the template. Templates are immutable,
+            // so any two nodes that have a template with the same ID should have the exact same template.
+            // This just makes sure that they do.
+            if (processGroup.getTemplate(template.getIdentifier()) != null) {
+                processGroup.removeTemplate(template);
+            }
             processGroup.addTemplate(template);
         }
 
@@ -939,7 +1012,7 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
                 remoteGroup.setYieldDuration(remoteGroupDto.getYieldDuration());
             }
 
-            String transportProtocol = remoteGroupDto.getTransportProtocol();
+            final String transportProtocol = remoteGroupDto.getTransportProtocol();
             if (transportProtocol != null && !transportProtocol.trim().isEmpty()) {
                 remoteGroup.setTransportProtocol(SiteToSiteTransportProtocol.valueOf(transportProtocol.toUpperCase()));
             }
@@ -1085,6 +1158,57 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
     }
 
     /**
+     * If both authorizers are external authorizers, or if the both are internal authorizers with equal fingerprints,
+     * then an uniheritable result with no reason is returned to indicate nothing to do.
+     *
+     * If both are internal authorizers and the current authorizer is empty, then an inheritable result is returned.
+     *
+     * All other cases return uninheritable with a reason which indicates to throw an exception.
+     *
+     * @param existingFlow the existing DataFlow
+     * @param proposedFlow the proposed DataFlow
+     * @return the AuthorizerInheritability result
+     */
+    public AuthorizerInheritability checkAuthorizerInheritability(final DataFlow existingFlow, final DataFlow proposedFlow) {
+        final byte[] existing = existingFlow.getAuthorizerFingerprint();
+        final byte[] proposed = proposedFlow.getAuthorizerFingerprint();
+
+        // both are using external authorizers so nothing to inherit, but we don't want to throw an exception
+        if (existing == null && proposed == null) {
+            return AuthorizerInheritability.uninheritable(null);
+        }
+
+        // current is external, but proposed is internal
+        if (existing == null && proposed != null) {
+            return AuthorizerInheritability.uninheritable(
+                    "Current Authorizer is an external Authorizer, but proposed Authorizer is an internal Authorizer");
+        }
+
+        // current is internal, but proposed is external
+        if (existing != null && proposed == null) {
+            return AuthorizerInheritability.uninheritable(
+                    "Current Authorizer is an internal Authorizer, but proposed Authorizer is an external Authorizer");
+        }
+
+        // both are internal, but not the same
+        if (!Arrays.equals(existing, proposed)) {
+            final byte[] emptyAuthBytes = AbstractPolicyBasedAuthorizer.EMPTY_FINGERPRINT.getBytes(StandardCharsets.UTF_8);
+
+            // if current is empty then we can take all the proposed authorizations
+            // otherwise they are both internal authorizers and don't match so we can't proceed
+            if (Arrays.equals(emptyAuthBytes, existing)) {
+                return AuthorizerInheritability.inheritable();
+            } else {
+                return AuthorizerInheritability.uninheritable(
+                        "Proposed Authorizations do not match current Authorizations");
+            }
+        }
+
+        // both are internal and equal
+        return AuthorizerInheritability.uninheritable(null);
+    }
+
+    /**
      * Returns true if the given controller can inherit the proposed flow without orphaning flow files.
      *
      * @param existingFlow flow
@@ -1200,4 +1324,36 @@ public class StandardFlowSynchronizer implements FlowSynchronizer {
     private String formatFlowDiscrepancy(final String flowFingerprint, final int deltaIndex, final int deltaPad) {
         return flowFingerprint.substring(Math.max(0, deltaIndex - deltaPad), Math.min(flowFingerprint.length(), deltaIndex + deltaPad));
     }
+
+    /**
+     * Holder for the result of determining if a proposed Authorizer is inheritable.
+     */
+    private static final class AuthorizerInheritability {
+
+        private final boolean inheritable;
+        private final String reason;
+
+        public AuthorizerInheritability(boolean inheritable, String reason) {
+            this.inheritable = inheritable;
+            this.reason = reason;
+        }
+
+        public boolean isInheritable() {
+            return inheritable;
+        }
+
+        public String getReason() {
+            return reason;
+        }
+
+        public static AuthorizerInheritability uninheritable(String reason) {
+            return new AuthorizerInheritability(false, reason);
+        }
+
+        public static AuthorizerInheritability inheritable() {
+            return new AuthorizerInheritability(true, null);
+        }
+
+    }
+
 }

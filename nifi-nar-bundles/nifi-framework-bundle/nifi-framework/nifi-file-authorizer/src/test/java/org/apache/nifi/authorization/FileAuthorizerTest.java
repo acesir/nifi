@@ -20,9 +20,11 @@ import org.apache.nifi.attribute.expression.language.StandardPropertyValue;
 import org.apache.nifi.authorization.AuthorizationResult.Result;
 import org.apache.nifi.authorization.exception.AuthorizerCreationException;
 import org.apache.nifi.authorization.resource.ResourceFactory;
+import org.apache.nifi.authorization.resource.ResourceType;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.util.file.FileUtils;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
@@ -31,6 +33,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -75,39 +80,37 @@ public class FileAuthorizerTest {
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
             "<authorizations>" +
             "  <groups>" +
-            "    <group identifier=\"group-1\" name=\"group-1\" />" +
-            "    <group identifier=\"group-2\" name=\"group-2\" />" +
+            "    <group identifier=\"group-1\" name=\"group-1\">" +
+            "       <user identifier=\"user-1\" />" +
+            "    </group>" +
+            "    <group identifier=\"group-2\" name=\"group-2\">" +
+            "       <user identifier=\"user-2\" />" +
+            "    </group>" +
             "  </groups>" +
             "  <users>" +
-            "    <user identifier=\"user-1\" identity=\"user-1\">" +
-            "      <group identifier=\"group-1\" />" +
-            "      <group identifier=\"group-2\" />" +
-            "    </user>\n" +
+            "    <user identifier=\"user-1\" identity=\"user-1\" />" +
             "    <user identifier=\"user-2\" identity=\"user-2\" />" +
             "  </users>" +
             "  <policies>" +
-            "      <policy identifier=\"policy-1\" resource=\"/flow\" action=\"RW\">" +
+            "      <policy identifier=\"policy-1\" resource=\"/flow\" action=\"R\">" +
                     "  <group identifier=\"group-1\" />" +
                     "  <group identifier=\"group-2\" />" +
                     "  <user identifier=\"user-1\" />" +
             "      </policy>" +
-            "      <policy identifier=\"policy-2\" resource=\"/flow\" action=\"RW\">" +
+            "      <policy identifier=\"policy-2\" resource=\"/flow\" action=\"W\">" +
             "        <user identifier=\"user-2\" />" +
             "      </policy>" +
             "  </policies>" +
             "</authorizations>";
 
-    private static final String UPDATED_AUTHORIZATIONS =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
-        + "<resources>"
-            + "<resource identifier=\"/flow\">"
-                + "<authorization identity=\"user-1\" action=\"RW\"/>"
-            + "</resource>"
-        + "</resources>";
+    // This is the root group id from the flow.xml.gz in src/test/resources
+    private static final String ROOT_GROUP_ID = "e530e14c-adcf-41c2-b5d6-d9a59ba8765c";
 
+    private NiFiProperties properties;
     private FileAuthorizer authorizer;
     private File primary;
     private File restore;
+    private File flow;
 
     private AuthorizerConfigurationContext configurationContext;
 
@@ -121,8 +124,12 @@ public class FileAuthorizerTest {
         restore = new File("target/restore/authorizations.xml");
         FileUtils.ensureDirectoryExistAndCanAccess(restore.getParentFile());
 
-        final NiFiProperties properties = mock(NiFiProperties.class);
+        flow = new File("src/test/resources/flow.xml.gz");
+        FileUtils.ensureDirectoryExistAndCanAccess(flow.getParentFile());
+
+        properties = mock(NiFiProperties.class);
         when(properties.getRestoreDirectory()).thenReturn(restore.getParentFile());
+        when(properties.getFlowConfigurationFile()).thenReturn(flow);
 
         configurationContext = mock(AuthorizerConfigurationContext.class);
         when(configurationContext.getProperty(Mockito.eq("Authorizations File"))).thenReturn(new StandardPropertyValue(primary.getPath(), null));
@@ -139,11 +146,9 @@ public class FileAuthorizerTest {
     }
 
     @Test
-    public void testOnConfiguredWhenInitialAdminProvided() throws Exception {
-        final String adminIdentity = "admin-user";
-
-        when(configurationContext.getProperty(Mockito.eq("Initial Admin Identity")))
-                .thenReturn(new StandardPropertyValue(adminIdentity, null));
+    public void testOnConfiguredWhenLegacyUsersFileProvidedWithOverlappingRoles() throws Exception {
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_LEGACY_AUTHORIZED_USERS_FILE)))
+                .thenReturn(new StandardPropertyValue("src/test/resources/authorized-users-multirole.xml", null));
 
         writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
         authorizer.onConfigured(configurationContext);
@@ -151,11 +156,161 @@ public class FileAuthorizerTest {
         final Set<User> users = authorizer.getUsers();
         assertEquals(1, users.size());
 
-        final User adminUser = users.iterator().next();
-        assertEquals(adminIdentity, adminUser.getIdentity());
+        UsersAndAccessPolicies usersAndAccessPolicies = authorizer.getUsersAndAccessPolicies();
+        assertNotNull(usersAndAccessPolicies.getAccessPolicy(ResourceType.Flow.getValue(), RequestAction.READ));
+        assertNotNull(usersAndAccessPolicies.getAccessPolicy(ResourceType.Controller.getValue(), RequestAction.READ));
+        assertNotNull(usersAndAccessPolicies.getAccessPolicy(ResourceType.Controller.getValue(), RequestAction.WRITE));
+        assertNotNull(usersAndAccessPolicies.getAccessPolicy(ResourceType.System.getValue(), RequestAction.READ));
+        assertNotNull(usersAndAccessPolicies.getAccessPolicy(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID, RequestAction.READ));
+        assertNotNull(usersAndAccessPolicies.getAccessPolicy(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID, RequestAction.WRITE));
+    }
 
+    @Test
+    public void testOnConfiguredWhenLegacyUsersFileProvided() throws Exception {
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_LEGACY_AUTHORIZED_USERS_FILE)))
+                .thenReturn(new StandardPropertyValue("src/test/resources/authorized-users.xml", null));
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
+
+        // verify all users got created correctly
+        final Set<User> users = authorizer.getUsers();
+        assertEquals(6, users.size());
+
+        final User user1 = authorizer.getUserByIdentity("user1");
+        assertNotNull(user1);
+
+        final User user2 = authorizer.getUserByIdentity("user2");
+        assertNotNull(user2);
+
+        final User user3 = authorizer.getUserByIdentity("user3");
+        assertNotNull(user3);
+
+        final User user4 = authorizer.getUserByIdentity("user4");
+        assertNotNull(user4);
+
+        final User user5 = authorizer.getUserByIdentity("user5");
+        assertNotNull(user5);
+
+        final User user6 = authorizer.getUserByIdentity("user6");
+        assertNotNull(user6);
+
+        // verify one group got created
+        final Set<Group> groups = authorizer.getGroups();
+        assertEquals(1, groups.size());
+        assertEquals("group1", groups.iterator().next().getName());
+
+        // verify more than one policy got created
         final Set<AccessPolicy> policies = authorizer.getAccessPolicies();
-        assertEquals(4, policies.size());
+        assertTrue(policies.size() > 0);
+
+        // verify user1's policies
+        final Map<String,Set<RequestAction>> user1Policies = getResourceActions(policies, user1);
+        assertEquals(4, user1Policies.size());
+
+        assertTrue(user1Policies.containsKey(ResourceType.Flow.getValue()));
+        assertEquals(1, user1Policies.get(ResourceType.Flow.getValue()).size());
+        assertTrue(user1Policies.get(ResourceType.Flow.getValue()).contains(RequestAction.READ));
+
+        assertTrue(user1Policies.containsKey(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID));
+        assertEquals(1, user1Policies.get(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID).size());
+        assertTrue(user1Policies.get(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID).contains(RequestAction.READ));
+
+        // verify user2's policies
+        final Map<String,Set<RequestAction>> user2Policies = getResourceActions(policies, user2);
+        assertEquals(2, user2Policies.size());
+
+        assertTrue(user2Policies.containsKey(ResourceType.Provenance.getValue()));
+        assertEquals(1, user2Policies.get(ResourceType.Provenance.getValue()).size());
+        assertTrue(user2Policies.get(ResourceType.Provenance.getValue()).contains(RequestAction.READ));
+
+        // verify user3's policies
+        final Map<String,Set<RequestAction>> user3Policies = getResourceActions(policies, user3);
+        assertEquals(4, user3Policies.size());
+
+        assertTrue(user3Policies.containsKey(ResourceType.Flow.getValue()));
+        assertEquals(1, user3Policies.get(ResourceType.Flow.getValue()).size());
+        assertTrue(user3Policies.get(ResourceType.Flow.getValue()).contains(RequestAction.READ));
+
+        assertTrue(user3Policies.containsKey(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID));
+        assertEquals(2, user3Policies.get(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID).size());
+        assertTrue(user3Policies.get(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID).contains(RequestAction.WRITE));
+
+        // verify user4's policies
+        final Map<String,Set<RequestAction>> user4Policies = getResourceActions(policies, user4);
+        assertEquals(5, user4Policies.size());
+
+        assertTrue(user4Policies.containsKey(ResourceType.Flow.getValue()));
+        assertEquals(1, user4Policies.get(ResourceType.Flow.getValue()).size());
+        assertTrue(user4Policies.get(ResourceType.Flow.getValue()).contains(RequestAction.READ));
+
+        assertTrue(user4Policies.containsKey(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID));
+        assertEquals(1, user4Policies.get(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID).size());
+        assertTrue(user4Policies.get(ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID).contains(RequestAction.READ));
+
+        assertTrue(user4Policies.containsKey(ResourceType.Tenant.getValue()));
+        assertEquals(2, user4Policies.get(ResourceType.Tenant.getValue()).size());
+        assertTrue(user4Policies.get(ResourceType.Tenant.getValue()).contains(RequestAction.WRITE));
+
+        assertTrue(user4Policies.containsKey(ResourceType.Policy.getValue()));
+        assertEquals(2, user4Policies.get(ResourceType.Policy.getValue()).size());
+        assertTrue(user4Policies.get(ResourceType.Policy.getValue()).contains(RequestAction.WRITE));
+
+        // verify user5's policies
+        final Map<String,Set<RequestAction>> user5Policies = getResourceActions(policies, user5);
+        assertEquals(1, user5Policies.size());
+
+        assertTrue(user5Policies.containsKey(ResourceType.Proxy.getValue()));
+        assertEquals(2, user5Policies.get(ResourceType.Proxy.getValue()).size());
+        assertTrue(user5Policies.get(ResourceType.Proxy.getValue()).contains(RequestAction.WRITE));
+
+        // verify user6's policies
+        final Map<String,Set<RequestAction>> user6Policies = getResourceActions(policies, user6);
+        assertEquals(2, user6Policies.size());
+
+        assertTrue(user6Policies.containsKey(ResourceType.SiteToSite.getValue()));
+        assertEquals(2, user6Policies.get(ResourceType.SiteToSite.getValue()).size());
+        assertTrue(user6Policies.get(ResourceType.SiteToSite.getValue()).contains(RequestAction.WRITE));
+    }
+
+    private Map<String,Set<RequestAction>> getResourceActions(final Set<AccessPolicy> policies, final User user) {
+        Map<String,Set<RequestAction>> resourceActionMap = new HashMap<>();
+
+        for (AccessPolicy accessPolicy : policies) {
+            if (accessPolicy.getUsers().contains(user.getIdentifier())) {
+                Set<RequestAction> actions = resourceActionMap.get(accessPolicy.getResource());
+                if (actions == null) {
+                    actions = new HashSet<>();
+                    resourceActionMap.put(accessPolicy.getResource(), actions);
+                }
+                actions.add(accessPolicy.getAction());
+            }
+        }
+
+        return resourceActionMap;
+    }
+
+    @Test(expected = AuthorizerCreationException.class)
+    public void testOnConfiguredWhenBadLegacyUsersFileProvided() throws Exception {
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_LEGACY_AUTHORIZED_USERS_FILE)))
+                .thenReturn(new StandardPropertyValue("src/test/resources/does-not-exist.xml", null));
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
+    }
+
+    @Test(expected = AuthorizerCreationException.class)
+    public void testOnConfiguredWhenInitialAdminAndLegacyUsersProvided() throws Exception {
+        final String adminIdentity = "admin-user";
+
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_INITIAL_ADMIN_IDENTITY)))
+                .thenReturn(new StandardPropertyValue(adminIdentity, null));
+
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_LEGACY_AUTHORIZED_USERS_FILE)))
+                .thenReturn(new StandardPropertyValue("src/test/resources/authorized-users.xml", null));
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
     }
 
     @Test
@@ -168,6 +323,158 @@ public class FileAuthorizerTest {
 
         final Set<AccessPolicy> policies = authorizer.getAccessPolicies();
         assertEquals(0, policies.size());
+    }
+
+    @Test
+    public void testOnConfiguredWhenInitialAdminProvided() throws Exception {
+        final String adminIdentity = "admin-user";
+
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_INITIAL_ADMIN_IDENTITY)))
+                .thenReturn(new StandardPropertyValue(adminIdentity, null));
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
+
+        final Set<User> users = authorizer.getUsers();
+        assertEquals(1, users.size());
+
+        final User adminUser = users.iterator().next();
+        assertEquals(adminIdentity, adminUser.getIdentity());
+
+        final Set<AccessPolicy> policies = authorizer.getAccessPolicies();
+        assertEquals(7, policies.size());
+
+        final String rootGroupResource = ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID;
+
+        boolean foundRootGroupPolicy = false;
+        for (AccessPolicy policy : policies) {
+            if (policy.getResource().equals(rootGroupResource)) {
+                foundRootGroupPolicy = true;
+                break;
+            }
+        }
+
+        assertTrue(foundRootGroupPolicy);
+    }
+
+    @Test
+    public void testOnConfiguredWhenInitialAdminProvidedAndNoFlowExists() throws Exception {
+        // setup NiFi properties to return a file that does not exist
+        properties = mock(NiFiProperties.class);
+        when(properties.getRestoreDirectory()).thenReturn(restore.getParentFile());
+        when(properties.getFlowConfigurationFile()).thenReturn(new File("src/test/resources/does-not-exist.xml.gz"));
+        authorizer.setNiFiProperties(properties);
+
+        final String adminIdentity = "admin-user";
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_INITIAL_ADMIN_IDENTITY)))
+                .thenReturn(new StandardPropertyValue(adminIdentity, null));
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
+
+        final Set<User> users = authorizer.getUsers();
+        assertEquals(1, users.size());
+
+        final User adminUser = users.iterator().next();
+        assertEquals(adminIdentity, adminUser.getIdentity());
+
+        final Set<AccessPolicy> policies = authorizer.getAccessPolicies();
+        assertEquals(5, policies.size());
+
+        final String rootGroupResource = ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID;
+
+        boolean foundRootGroupPolicy = false;
+        for (AccessPolicy policy : policies) {
+            if (policy.getResource().equals(rootGroupResource)) {
+                foundRootGroupPolicy = true;
+                break;
+            }
+        }
+
+        assertFalse(foundRootGroupPolicy);
+    }
+
+    @Test
+    public void testOnConfiguredWhenInitialAdminProvidedAndFlowIsNull() throws Exception {
+        // setup NiFi properties to return a file that does not exist
+        properties = mock(NiFiProperties.class);
+        when(properties.getRestoreDirectory()).thenReturn(restore.getParentFile());
+        when(properties.getFlowConfigurationFile()).thenReturn(null);
+        authorizer.setNiFiProperties(properties);
+
+        final String adminIdentity = "admin-user";
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_INITIAL_ADMIN_IDENTITY)))
+                .thenReturn(new StandardPropertyValue(adminIdentity, null));
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
+
+        final Set<User> users = authorizer.getUsers();
+        assertEquals(1, users.size());
+
+        final User adminUser = users.iterator().next();
+        assertEquals(adminIdentity, adminUser.getIdentity());
+
+        final Set<AccessPolicy> policies = authorizer.getAccessPolicies();
+        assertEquals(5, policies.size());
+
+        final String rootGroupResource = ResourceType.ProcessGroup.getValue() + "/" + ROOT_GROUP_ID;
+
+        boolean foundRootGroupPolicy = false;
+        for (AccessPolicy policy : policies) {
+            if (policy.getResource().equals(rootGroupResource)) {
+                foundRootGroupPolicy = true;
+                break;
+            }
+        }
+
+        assertFalse(foundRootGroupPolicy);
+    }
+
+    @Test
+    public void testOnConfiguredWhenNodeIdentitiesProvided() throws Exception {
+        final String adminIdentity = "admin-user";
+
+        when(configurationContext.getProperty(Mockito.eq(FileAuthorizer.PROP_INITIAL_ADMIN_IDENTITY)))
+                .thenReturn(new StandardPropertyValue(adminIdentity, null));
+
+        final String nodeIdentity1 = "node1";
+        final String nodeIdentity2 = "node2";
+
+        final Map<String,String> props = new HashMap<>();
+        props.put("Node Identity 1", nodeIdentity1);
+        props.put("Node Identity 2", nodeIdentity2);
+
+        when(configurationContext.getProperties()).thenReturn(props);
+
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS_CONCISE);
+        authorizer.onConfigured(configurationContext);
+
+        User adminUser = authorizer.getUserByIdentity(adminIdentity);
+        assertNotNull(adminUser);
+
+        User nodeUser1 = authorizer.getUserByIdentity(nodeIdentity1);
+        assertNotNull(nodeUser1);
+
+        User nodeUser2 = authorizer.getUserByIdentity(nodeIdentity2);
+        assertNotNull(nodeUser2);
+
+        AccessPolicy proxyReadPolicy = authorizer.getUsersAndAccessPolicies().getAccessPolicy(ResourceType.Proxy.getValue(), RequestAction.READ);
+        AccessPolicy proxyWritePolicy = authorizer.getUsersAndAccessPolicies().getAccessPolicy(ResourceType.Proxy.getValue(), RequestAction.WRITE);
+
+        assertNotNull(proxyReadPolicy);
+        assertTrue(proxyReadPolicy.getUsers().contains(nodeUser1.getIdentifier()));
+        assertTrue(proxyReadPolicy.getUsers().contains(nodeUser2.getIdentifier()));
+
+        assertNotNull(proxyWritePolicy);
+        assertTrue(proxyWritePolicy.getUsers().contains(nodeUser1.getIdentifier()));
+        assertTrue(proxyWritePolicy.getUsers().contains(nodeUser2.getIdentifier()));
+    }
+
+    @Test
+    public void testOnConfiguredWhenAuthorizationsFileDoesNotExist() {
+        authorizer.onConfigured(configurationContext);
+        assertEquals(0, authorizer.getAccessPolicies().size());
     }
 
     @Test
@@ -264,7 +571,7 @@ public class FileAuthorizerTest {
                     && group.getUsers().size() == 1 && group.getUsers().contains("user-1")) {
                 foundGroup1 = true;
             } else if (group.getIdentifier().equals("group-2") && group.getName().equals("group-2")
-                    && group.getUsers().size() == 1 && group.getUsers().contains("user-1")) {
+                    && group.getUsers().size() == 1 && group.getUsers().contains("user-2")) {
                 foundGroup2 = true;
             }
         }
@@ -279,12 +586,9 @@ public class FileAuthorizerTest {
         boolean foundUser2 = false;
 
         for (User user : users) {
-            if (user.getIdentifier().equals("user-1") && user.getIdentity().equals("user-1")
-                    && user.getGroups().size() == 2 && user.getGroups().contains("group-1")
-                    && user.getGroups().contains("group-2")) {
+            if (user.getIdentifier().equals("user-1") && user.getIdentity().equals("user-1")) {
                 foundUser1 = true;
-            } else if (user.getIdentifier().equals("user-2") && user.getIdentity().equals("user-2")
-                    && user.getGroups().size() == 0) {
+            } else if (user.getIdentifier().equals("user-2") && user.getIdentity().equals("user-2")) {
                 foundUser2 = true;
             }
         }
@@ -301,9 +605,7 @@ public class FileAuthorizerTest {
         for (AccessPolicy policy : policies) {
             if (policy.getIdentifier().equals("policy-1")
                     && policy.getResource().equals("/flow")
-                    && policy.getActions().size() == 2
-                    && policy.getActions().contains(RequestAction.READ)
-                    && policy.getActions().contains(RequestAction.WRITE)
+                    && policy.getAction() == RequestAction.READ
                     && policy.getGroups().size() == 2
                     && policy.getGroups().contains("group-1")
                     && policy.getGroups().contains("group-2")
@@ -312,9 +614,7 @@ public class FileAuthorizerTest {
                 foundPolicy1 = true;
             } else if (policy.getIdentifier().equals("policy-2")
                     && policy.getResource().equals("/flow")
-                    && policy.getActions().size() == 2
-                    && policy.getActions().contains(RequestAction.READ)
-                    && policy.getActions().contains(RequestAction.WRITE)
+                    && policy.getAction() == RequestAction.WRITE
                     && policy.getGroups().size() == 0
                     && policy.getUsers().size() == 1
                     && policy.getUsers().contains("user-2")) {
@@ -337,17 +637,12 @@ public class FileAuthorizerTest {
         final User user = new User.Builder()
                 .identifier("user-1")
                 .identity("user-identity-1")
-                .addGroup("group1")
-                .addGroup("group2")
                 .build();
 
         final User addedUser = authorizer.addUser(user);
         assertNotNull(addedUser);
         assertEquals(user.getIdentifier(), addedUser.getIdentifier());
         assertEquals(user.getIdentity(), addedUser.getIdentity());
-        assertEquals(2, addedUser.getGroups().size());
-        assertTrue(addedUser.getGroups().contains("group1"));
-        assertTrue(addedUser.getGroups().contains("group2"));
 
         final Set<User> users = authorizer.getUsers();
         assertEquals(1, users.size());
@@ -450,15 +745,12 @@ public class FileAuthorizerTest {
         final User user = new User.Builder()
                 .identifier("user-1")
                 .identity("new-identity")
-                .addGroup("new-group")
                 .build();
 
         final User updatedUser = authorizer.updateUser(user);
         assertNotNull(updatedUser);
         assertEquals(user.getIdentifier(), updatedUser.getIdentifier());
         assertEquals(user.getIdentity(), updatedUser.getIdentity());
-        assertEquals(1, updatedUser.getGroups().size());
-        assertTrue(updatedUser.getGroups().contains("new-group"));
     }
 
     @Test
@@ -470,7 +762,6 @@ public class FileAuthorizerTest {
         final User user = new User.Builder()
                 .identifier("user-X")
                 .identity("new-identity")
-                .addGroup("new-group")
                 .build();
 
         final User updatedUser = authorizer.updateUser(user);
@@ -488,7 +779,6 @@ public class FileAuthorizerTest {
         final Group group = new Group.Builder()
                 .identifier("group-id-1")
                 .name("group-name-1")
-                .addUser("user1") // should be ignored
                 .build();
 
         final Group addedGroup = authorizer.addGroup(group);
@@ -499,6 +789,44 @@ public class FileAuthorizerTest {
 
         final Set<Group> groups = authorizer.getGroups();
         assertEquals(1, groups.size());
+    }
+
+    @Test
+    public void testAddGroupWithUser() throws Exception {
+        writeAuthorizationsFile(primary, AUTHORIZATIONS);
+        authorizer.onConfigured(configurationContext);
+        assertEquals(2, authorizer.getGroups().size());
+
+        final Group group = new Group.Builder()
+                .identifier("group-id-XXX")
+                .name("group-name-XXX")
+                .addUser("user-1")
+                .build();
+
+        final Group addedGroup = authorizer.addGroup(group);
+        assertNotNull(addedGroup);
+        assertEquals(group.getIdentifier(), addedGroup.getIdentifier());
+        assertEquals(group.getName(), addedGroup.getName());
+        assertEquals(1, addedGroup.getUsers().size());
+
+        final Set<Group> groups = authorizer.getGroups();
+        assertEquals(3, groups.size());
+    }
+
+
+    @Test(expected = IllegalStateException.class)
+    public void testAddGroupWhenUserDoesNotExist() throws Exception {
+        writeAuthorizationsFile(primary, EMPTY_AUTHORIZATIONS);
+        authorizer.onConfigured(configurationContext);
+        assertEquals(0, authorizer.getGroups().size());
+
+        final Group group = new Group.Builder()
+                .identifier("group-id-1")
+                .name("group-name-1")
+                .addUser("user1")
+                .build();
+
+        authorizer.addGroup(group);
     }
 
     @Test
@@ -530,12 +858,6 @@ public class FileAuthorizerTest {
         authorizer.onConfigured(configurationContext);
         assertEquals(2, authorizer.getGroups().size());
 
-        // retrieve user-1 and verify its in group-1
-        final User user1 = authorizer.getUser("user-1");
-        assertNotNull(user1);
-        assertEquals(2, user1.getGroups().size());
-        assertTrue(user1.getGroups().contains("group-1"));
-
         final AccessPolicy policy1 = authorizer.getAccessPolicy("policy-1");
         assertTrue(policy1.getGroups().contains("group-1"));
 
@@ -553,12 +875,6 @@ public class FileAuthorizerTest {
 
         // verify we can no longer retrieve group-1 by identifier
         assertNull(authorizer.getGroup(group.getIdentifier()));
-
-        // verify user-1 is no longer in group-1
-        final User updatedUser1 = authorizer.getUser("user-1");
-        assertNotNull(updatedUser1);
-        assertEquals(1, updatedUser1.getGroups().size());
-        assertFalse(updatedUser1.getGroups().contains("group-1"));
 
         // verify group-1 is no longer in policy-1
         final AccessPolicy updatedPolicy1 = authorizer.getAccessPolicy("policy-1");
@@ -587,14 +903,23 @@ public class FileAuthorizerTest {
         authorizer.onConfigured(configurationContext);
         assertEquals(2, authorizer.getGroups().size());
 
+        // verify user-1 is in group-1 before the update
+        final Group groupBefore = authorizer.getGroup("group-1");
+        assertEquals(1, groupBefore.getUsers().size());
+        assertTrue(groupBefore.getUsers().contains("user-1"));
+
         final Group group = new Group.Builder()
                 .identifier("group-1")
                 .name("new-name")
+                .addUser("user-2")
                 .build();
 
         final Group updatedGroup = authorizer.updateGroup(group);
         assertEquals(group.getIdentifier(), updatedGroup.getIdentifier());
         assertEquals(group.getName(), updatedGroup.getName());
+
+        assertEquals(1, updatedGroup.getUsers().size());
+        assertTrue(updatedGroup.getUsers().contains("user-2"));
     }
 
     @Test
@@ -626,7 +951,7 @@ public class FileAuthorizerTest {
                 .resource("resource-1")
                 .addUser("user-1")
                 .addGroup("group-1")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
         final AccessPolicy returnedPolicy1 = authorizer.addAccessPolicy(policy1);
@@ -635,7 +960,7 @@ public class FileAuthorizerTest {
         assertEquals(policy1.getResource(), returnedPolicy1.getResource());
         assertEquals(policy1.getUsers(), returnedPolicy1.getUsers());
         assertEquals(policy1.getGroups(), returnedPolicy1.getGroups());
-        assertEquals(policy1.getActions(), returnedPolicy1.getActions());
+        assertEquals(policy1.getAction(), returnedPolicy1.getAction());
 
         assertEquals(1, authorizer.getAccessPolicies().size());
 
@@ -645,12 +970,16 @@ public class FileAuthorizerTest {
                 .resource("resource-1")
                 .addUser("user-1")
                 .addGroup("group-1")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
-        final AccessPolicy returnedPolicy2 = authorizer.addAccessPolicy(policy2);
-        assertNotNull(returnedPolicy2);
-        assertEquals(2, authorizer.getAccessPolicies().size());
+        try {
+            final AccessPolicy returnedPolicy2 = authorizer.addAccessPolicy(policy2);
+            Assert.fail("Should have thrown exception");
+        } catch (Exception e) {
+        }
+
+        assertEquals(1, authorizer.getAccessPolicies().size());
     }
 
     @Test
@@ -662,7 +991,7 @@ public class FileAuthorizerTest {
         final AccessPolicy policy1 = new AccessPolicy.Builder()
                 .identifier("policy-1")
                 .resource("resource-1")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
         final AccessPolicy returnedPolicy1 = authorizer.addAccessPolicy(policy1);
@@ -671,7 +1000,7 @@ public class FileAuthorizerTest {
         assertEquals(policy1.getResource(), returnedPolicy1.getResource());
         assertEquals(policy1.getUsers(), returnedPolicy1.getUsers());
         assertEquals(policy1.getGroups(), returnedPolicy1.getGroups());
-        assertEquals(policy1.getActions(), returnedPolicy1.getActions());
+        assertEquals(policy1.getAction(), returnedPolicy1.getAction());
 
         assertEquals(1, authorizer.getAccessPolicies().size());
     }
@@ -687,9 +1016,7 @@ public class FileAuthorizerTest {
         assertEquals("policy-1", policy.getIdentifier());
         assertEquals("/flow", policy.getResource());
 
-        assertEquals(2, policy.getActions().size());
-        assertTrue(policy.getActions().contains(RequestAction.WRITE));
-        assertTrue(policy.getActions().contains(RequestAction.READ));
+        assertEquals(RequestAction.READ, policy.getAction());
 
         assertEquals(1, policy.getUsers().size());
         assertTrue(policy.getUsers().contains("user-1"));
@@ -720,13 +1047,13 @@ public class FileAuthorizerTest {
                 .resource("resource-A")
                 .addUser("user-A")
                 .addGroup("group-A")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
         final AccessPolicy updateAccessPolicy = authorizer.updateAccessPolicy(policy);
         assertNotNull(updateAccessPolicy);
         assertEquals("policy-1", updateAccessPolicy.getIdentifier());
-        assertEquals("resource-A", updateAccessPolicy.getResource());
+        assertEquals("/flow", updateAccessPolicy.getResource());
 
         assertEquals(1, updateAccessPolicy.getUsers().size());
         assertTrue(updateAccessPolicy.getUsers().contains("user-A"));
@@ -734,8 +1061,7 @@ public class FileAuthorizerTest {
         assertEquals(1, updateAccessPolicy.getGroups().size());
         assertTrue(updateAccessPolicy.getGroups().contains("group-A"));
 
-        assertEquals(1, updateAccessPolicy.getActions().size());
-        assertTrue(updateAccessPolicy.getActions().contains(RequestAction.READ));
+        assertEquals(RequestAction.READ, updateAccessPolicy.getAction());
     }
 
     @Test
@@ -749,7 +1075,7 @@ public class FileAuthorizerTest {
                 .resource("resource-A")
                 .addUser("user-A")
                 .addGroup("group-A")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
         final AccessPolicy updateAccessPolicy = authorizer.updateAccessPolicy(policy);
@@ -767,7 +1093,7 @@ public class FileAuthorizerTest {
                 .resource("resource-A")
                 .addUser("user-A")
                 .addGroup("group-A")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
         final AccessPolicy deletedAccessPolicy = authorizer.deleteAccessPolicy(policy);
@@ -790,7 +1116,7 @@ public class FileAuthorizerTest {
                 .resource("resource-A")
                 .addUser("user-A")
                 .addGroup("group-A")
-                .addAction(RequestAction.READ)
+                .action(RequestAction.READ)
                 .build();
 
         final AccessPolicy deletedAccessPolicy = authorizer.deleteAccessPolicy(policy);

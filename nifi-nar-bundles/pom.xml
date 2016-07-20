@@ -44,7 +44,7 @@
         <module>nifi-flume-bundle</module>
         <module>nifi-hbase-bundle</module>
         <module>nifi-ambari-bundle</module>
-        <module>nifi-image-bundle</module>
+        <module>nifi-media-bundle</module>
         <module>nifi-avro-bundle</module>
         <module>nifi-couchbase-bundle</module>
         <module>nifi-azure-bundle</module>
@@ -64,6 +64,9 @@
 	    <module>nifi-site-to-site-reporting-bundle</module>
         <module>nifi-mqtt-bundle</module>
         <module>nifi-evtx-bundle</module>
+        <module>nifi-slack-bundle</module>
+        <module>nifi-snmp-bundle</module>
+        <module>nifi-windows-event-log-bundle</module>
     </modules>
 
     <dependencyManagement>
@@ -127,6 +130,12 @@
             <dependency>
                 <groupId>org.apache.nifi</groupId>
                 <artifactId>nifi-api</artifactId>
+                <version>1.0.0-SNAPSHOT</version>
+                <scope>provided</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.nifi</groupId>
+                <artifactId>nifi-framework-api</artifactId>
                 <version>1.0.0-SNAPSHOT</version>
                 <scope>provided</scope>
             </dependency>

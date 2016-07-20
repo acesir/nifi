@@ -90,6 +90,11 @@
 
 #bulletin-button {
     background-color: #728E9B; /*base-color*/
+    cursor: default;
+}
+
+#bulletin-button.has-bulletins {
+    background-color: #ba554a; /*warm-color*/
 }
 
 #bulletin-button i.fa {
@@ -106,6 +111,10 @@
     background-color: transparent;
 }
 
+#connected-nodes-count.connection-warning {
+    color: #BA554A;
+}
+
 /* search field */
 div.search-result-icon {
     float: left;
@@ -120,6 +129,7 @@ div.search-result-icon {
     background: #FFFFFF;
     border: 0px;
     padding: 0px;
+    box-shadow: none;
 }
 
 input.search-flow {

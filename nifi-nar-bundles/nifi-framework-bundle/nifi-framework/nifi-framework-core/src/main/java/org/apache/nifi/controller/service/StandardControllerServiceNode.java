@@ -17,9 +17,12 @@
 package org.apache.nifi.controller.service;
 
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -35,17 +38,15 @@ import org.apache.nifi.authorization.Resource;
 import org.apache.nifi.authorization.resource.Authorizable;
 import org.apache.nifi.authorization.resource.ResourceFactory;
 import org.apache.nifi.authorization.resource.ResourceType;
+import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.controller.AbstractConfiguredComponent;
 import org.apache.nifi.controller.ConfigurationContext;
 import org.apache.nifi.controller.ConfiguredComponent;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.controller.ValidationContextFactory;
-import org.apache.nifi.controller.annotation.OnConfigured;
-import org.apache.nifi.controller.exception.ComponentLifeCycleException;
 import org.apache.nifi.groups.ProcessGroup;
 import org.apache.nifi.logging.ComponentLog;
-import org.apache.nifi.nar.NarCloseable;
 import org.apache.nifi.processor.SimpleProcessLogger;
 import org.apache.nifi.util.ReflectionUtils;
 import org.slf4j.Logger;
@@ -165,6 +166,21 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
     }
 
     @Override
+    public List<ControllerServiceNode> getRequiredControllerServices() {
+        Set<ControllerServiceNode> requiredServices = new HashSet<>();
+        for (Entry<PropertyDescriptor, String> pEntry : this.getProperties().entrySet()) {
+            PropertyDescriptor descriptor = pEntry.getKey();
+            if (descriptor.getControllerServiceDefinition() != null && descriptor.isRequired()) {
+                ControllerServiceNode rNode = this.processGroup.getControllerService(pEntry.getValue());
+                requiredServices.add(rNode);
+                requiredServices.addAll(rNode.getRequiredControllerServices());
+            }
+        }
+        return new ArrayList<>(requiredServices);
+    }
+
+
+    @Override
     public void removeReference(final ConfiguredComponent referencingComponent) {
         writeLock.lock();
         try {
@@ -184,27 +200,11 @@ public class StandardControllerServiceNode extends AbstractConfiguredComponent i
     @Override
     public void setProperty(final String name, final String value) {
         super.setProperty(name, value);
-        onConfigured();
     }
 
     @Override
     public boolean removeProperty(String name) {
-        final boolean removed = super.removeProperty(name);
-        if (removed) {
-            onConfigured();
-        }
-
-        return removed;
-    }
-
-    @SuppressWarnings("deprecation")
-    private void onConfigured() {
-        try (final NarCloseable x = NarCloseable.withNarLoader()) {
-            final ConfigurationContext configContext = new StandardConfigurationContext(this, serviceProvider, null);
-            ReflectionUtils.invokeMethodsWithAnnotation(OnConfigured.class, implementation, configContext);
-        } catch (final Exception e) {
-            throw new ComponentLifeCycleException("Failed to invoke On-Configured Lifecycle methods of " + implementation, e);
-        }
+        return super.removeProperty(name);
     }
 
     @Override

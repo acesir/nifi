@@ -17,46 +17,41 @@
 package org.apache.nifi.web.api.dto;
 
 import com.wordnik.swagger.annotations.ApiModelProperty;
+import org.apache.nifi.web.api.entity.TenantEntity;
 
 import javax.xml.bind.annotation.XmlType;
+import java.util.Set;
 
 /**
  * Details for the access configuration.
  */
 @XmlType(name = "accessPolicy")
-public class AccessPolicyDTO {
+public class AccessPolicyDTO  extends AccessPolicySummaryDTO {
 
-    private Boolean canRead;
-    private Boolean canWrite;
+    private Set<TenantEntity> users;
+    private Set<TenantEntity> userGroups;
 
     /**
-     * @return Indicates whether the user can read a given resource.
+     * @return The set of user IDs associated with this access policy.
      */
-    @ApiModelProperty(
-            value = "Indicates whether the user can read a given resource.",
-            readOnly = true
-    )
-    public Boolean getCanRead() {
-        return canRead;
+    @ApiModelProperty(value = "The set of user IDs associated with this access policy.")
+    public Set<TenantEntity> getUsers() {
+        return users;
     }
 
-    public void setCanRead(Boolean canRead) {
-        this.canRead = canRead;
+    public void setUsers(Set<TenantEntity> users) {
+        this.users = users;
     }
 
     /**
-     * @return Indicates whether the user can write a given resource.
+     * @return The set of user group IDs associated with this access policy.
      */
-    @ApiModelProperty(
-            value = "Indicates whether the user can write a given resource.",
-            readOnly = true
-    )
-    public Boolean getCanWrite() {
-        return canWrite;
+    @ApiModelProperty(value = "The set of user group IDs associated with this access policy.")
+    public Set<TenantEntity> getUserGroups() {
+        return userGroups;
     }
 
-    public void setCanWrite(Boolean canWrite) {
-        this.canWrite = canWrite;
+    public void setUserGroups(Set<TenantEntity> userGroups) {
+        this.userGroups = userGroups;
     }
-
 }

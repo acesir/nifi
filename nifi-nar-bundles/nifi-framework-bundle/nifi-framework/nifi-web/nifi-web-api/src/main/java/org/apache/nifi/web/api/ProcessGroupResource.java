@@ -16,45 +16,24 @@
  */
 package org.apache.nifi.web.api;
 
-import java.io.InputStream;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-
-import javax.servlet.http.HttpServletRequest;
-import javax.ws.rs.Consumes;
-import javax.ws.rs.DELETE;
-import javax.ws.rs.DefaultValue;
-import javax.ws.rs.GET;
-import javax.ws.rs.HttpMethod;
-import javax.ws.rs.POST;
-import javax.ws.rs.PUT;
-import javax.ws.rs.Path;
-import javax.ws.rs.PathParam;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.core.Context;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.JAXBElement;
-import javax.xml.bind.JAXBException;
-import javax.xml.bind.Unmarshaller;
-import javax.xml.transform.stream.StreamSource;
-
+import com.sun.jersey.api.core.ResourceContext;
+import com.sun.jersey.multipart.FormDataParam;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.authorization.RequestAction;
 import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.cluster.protocol.NodeIdentifier;
 import org.apache.nifi.controller.Snippet;
 import org.apache.nifi.web.AuthorizableLookup;
 import org.apache.nifi.web.NiFiServiceFacade;
 import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UpdateResult;
 import org.apache.nifi.web.api.dto.ConnectionDTO;
 import org.apache.nifi.web.api.dto.ProcessGroupDTO;
 import org.apache.nifi.web.api.dto.RemoteProcessGroupDTO;
@@ -82,20 +61,39 @@ import org.apache.nifi.web.api.entity.ProcessorsEntity;
 import org.apache.nifi.web.api.entity.RemoteProcessGroupEntity;
 import org.apache.nifi.web.api.entity.RemoteProcessGroupsEntity;
 import org.apache.nifi.web.api.entity.TemplateEntity;
-import org.apache.nifi.web.api.entity.TemplatesEntity;
 import org.apache.nifi.web.api.request.ClientIdParameter;
 import org.apache.nifi.web.api.request.LongParameter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.sun.jersey.api.core.ResourceContext;
-import com.sun.jersey.multipart.FormDataParam;
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import javax.servlet.http.HttpServletRequest;
+import javax.ws.rs.Consumes;
+import javax.ws.rs.DELETE;
+import javax.ws.rs.DefaultValue;
+import javax.ws.rs.GET;
+import javax.ws.rs.HttpMethod;
+import javax.ws.rs.POST;
+import javax.ws.rs.PUT;
+import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
+import javax.ws.rs.Produces;
+import javax.ws.rs.QueryParam;
+import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.Context;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.xml.bind.JAXBContext;
+import javax.xml.bind.JAXBElement;
+import javax.xml.bind.JAXBException;
+import javax.xml.bind.Unmarshaller;
+import javax.xml.transform.stream.StreamSource;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Group.
@@ -147,34 +145,8 @@ public class ProcessGroupResource extends ApplicationResource {
      * @return group dto
      */
     public ProcessGroupEntity populateRemainingProcessGroupEntityContent(ProcessGroupEntity processGroupEntity) {
-        if (processGroupEntity.getComponent() != null) {
-            populateRemainingProcessGroupContent(processGroupEntity.getComponent());
-        }
+        processGroupEntity.setUri(generateResourceUri("process-groups",  processGroupEntity.getId()));
         return processGroupEntity;
-    }
-
-    /**
-     * Populates the remaining fields in the specified process groups.
-     *
-     * @param processGroups groups
-     * @return group dto
-     */
-    public Set<ProcessGroupDTO> populateRemainingProcessGroupsContent(Set<ProcessGroupDTO> processGroups) {
-        for (ProcessGroupDTO processGroup : processGroups) {
-            populateRemainingProcessGroupContent(processGroup);
-        }
-        return processGroups;
-    }
-
-    /**
-     * Populates the remaining fields in the specified process group.
-     *
-     * @param processGroup group
-     * @return group dto
-     */
-    private ProcessGroupDTO populateRemainingProcessGroupContent(ProcessGroupDTO processGroup) {
-        processGroup.setUri(generateResourceUri("process-groups",  processGroup.getId()));
-        return processGroup;
     }
 
     /**
@@ -240,7 +212,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get this process group contents
@@ -320,21 +292,16 @@ public class ProcessGroupResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable processGroup = lookup.getProcessGroup(id);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getProcessGroup(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             null,
             () -> {
                 // update the process group
-                final UpdateResult<ProcessGroupEntity> updateResult = serviceFacade.updateProcessGroup(revision, requestProcessGroupDTO);
-                final ProcessGroupEntity entity = updateResult.getResult();
+                final ProcessGroupEntity entity = serviceFacade.updateProcessGroup(revision, requestProcessGroupDTO);
                 populateRemainingProcessGroupEntityContent(entity);
 
-                if (updateResult.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }
@@ -399,7 +366,7 @@ public class ProcessGroupResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(id);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteProcessGroup(id),
             () -> {
@@ -457,6 +424,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Process group details must be specified.");
         }
 
+        if (processGroupEntity.getRevision() == null || (processGroupEntity.getRevision().getVersion() == null || processGroupEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Process group.");
+        }
+
         if (processGroupEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Process group ID cannot be specified.");
         }
@@ -477,7 +448,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -488,11 +459,12 @@ public class ProcessGroupResource extends ApplicationResource {
         processGroupEntity.getComponent().setId(generateUuid());
 
         // create the process group contents
-        final ProcessGroupEntity entity = serviceFacade.createProcessGroup(groupId, processGroupEntity.getComponent());
+        final Revision revision = getRevision(processGroupEntity, processGroupEntity.getComponent().getId());
+        final ProcessGroupEntity entity = serviceFacade.createProcessGroup(revision, groupId, processGroupEntity.getComponent());
         populateRemainingProcessGroupEntityContent(entity);
 
         // generate a 201 created response
-        String uri = entity.getComponent().getUri();
+        String uri = entity.getUri();
         return clusterContext(generateCreatedResponse(URI.create(uri), entity)).build();
     }
 
@@ -538,7 +510,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the process groups
@@ -608,6 +580,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Processor details must be specified.");
         }
 
+        if (processorEntity.getRevision() == null || (processorEntity.getRevision().getVersion() == null || processorEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Processor.");
+        }
+
         if (processorEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Processor ID cannot be specified.");
         }
@@ -632,7 +608,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -643,11 +619,12 @@ public class ProcessGroupResource extends ApplicationResource {
         processorEntity.getComponent().setId(generateUuid());
 
         // create the new processor
-        final ProcessorEntity entity = serviceFacade.createProcessor(groupId, processorEntity.getComponent());
+        final Revision revision = getRevision(processorEntity, processorEntity.getComponent().getId());
+        final ProcessorEntity entity = serviceFacade.createProcessor(revision, groupId, processorEntity.getComponent());
         processorResource.populateRemainingProcessorEntityContent(entity);
 
         // generate a 201 created response
-        String uri = entity.getComponent().getUri();
+        String uri = entity.getUri();
         return clusterContext(generateCreatedResponse(URI.create(uri), entity)).build();
     }
 
@@ -694,7 +671,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the processors
@@ -757,6 +734,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Port details must be specified.");
         }
 
+        if (portEntity.getRevision() == null || (portEntity.getRevision().getVersion() == null || portEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Input port.");
+        }
+
         if (portEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Input port ID cannot be specified.");
         }
@@ -777,7 +758,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -788,11 +769,12 @@ public class ProcessGroupResource extends ApplicationResource {
         portEntity.getComponent().setId(generateUuid());
 
         // create the input port and generate the json
-        final PortEntity entity = serviceFacade.createInputPort(groupId, portEntity.getComponent());
+        final Revision revision = getRevision(portEntity, portEntity.getComponent().getId());
+        final PortEntity entity = serviceFacade.createInputPort(revision, groupId, portEntity.getComponent());
         inputPortResource.populateRemainingInputPortEntityContent(entity);
 
         // build the response
-        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
+        return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
     }
 
     /**
@@ -837,7 +819,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get all the input ports
@@ -899,6 +881,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Port details must be specified.");
         }
 
+        if (portEntity.getRevision() == null || (portEntity.getRevision().getVersion() == null || portEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Output port.");
+        }
+
         if (portEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Output port ID cannot be specified.");
         }
@@ -919,7 +905,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -930,11 +916,12 @@ public class ProcessGroupResource extends ApplicationResource {
         portEntity.getComponent().setId(generateUuid());
 
         // create the output port and generate the json
-        final PortEntity entity = serviceFacade.createOutputPort(groupId, portEntity.getComponent());
+        final Revision revision = getRevision(portEntity, portEntity.getComponent().getId());
+        final PortEntity entity = serviceFacade.createOutputPort(revision, groupId, portEntity.getComponent());
         outputPortResource.populateRemainingOutputPortEntityContent(entity);
 
         // build the response
-        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
+        return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
     }
 
     /**
@@ -979,7 +966,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get all the output ports
@@ -1042,6 +1029,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Funnel details must be specified.");
         }
 
+        if (funnelEntity.getRevision() == null || (funnelEntity.getRevision().getVersion() == null || funnelEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Funnel.");
+        }
+
         if (funnelEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Funnel ID cannot be specified.");
         }
@@ -1062,7 +1053,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -1073,11 +1064,12 @@ public class ProcessGroupResource extends ApplicationResource {
         funnelEntity.getComponent().setId(generateUuid());
 
         // create the funnel and generate the json
-        final FunnelEntity entity = serviceFacade.createFunnel(groupId, funnelEntity.getComponent());
+        final Revision revision = getRevision(funnelEntity, funnelEntity.getComponent().getId());
+        final FunnelEntity entity = serviceFacade.createFunnel(revision, groupId, funnelEntity.getComponent());
         funnelResource.populateRemainingFunnelEntityContent(entity);
 
         // build the response
-        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
+        return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
     }
 
     /**
@@ -1122,7 +1114,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get all the funnels
@@ -1185,6 +1177,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Label details must be specified.");
         }
 
+        if (labelEntity.getRevision() == null || (labelEntity.getRevision().getVersion() == null || labelEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Label.");
+        }
+
         if (labelEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Label ID cannot be specified.");
         }
@@ -1205,7 +1201,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -1216,11 +1212,12 @@ public class ProcessGroupResource extends ApplicationResource {
         labelEntity.getComponent().setId(generateUuid());
 
         // create the label and generate the json
-        final LabelEntity entity = serviceFacade.createLabel(groupId, labelEntity.getComponent());
+        final Revision revision = getRevision(labelEntity, labelEntity.getComponent().getId());
+        final LabelEntity entity = serviceFacade.createLabel(revision, groupId, labelEntity.getComponent());
         labelResource.populateRemainingLabelEntityContent(entity);
 
         // build the response
-        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
+        return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
     }
 
     /**
@@ -1265,7 +1262,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get all the labels
@@ -1328,6 +1325,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Remote process group details must be specified.");
         }
 
+        if (remoteProcessGroupEntity.getRevision() == null || (remoteProcessGroupEntity.getRevision().getVersion() == null || remoteProcessGroupEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Remote process group.");
+        }
+
         final RemoteProcessGroupDTO requestProcessGroupDTO = remoteProcessGroupEntity.getComponent();
 
         if (requestProcessGroupDTO.getId() != null) {
@@ -1354,7 +1355,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -1391,10 +1392,11 @@ public class ProcessGroupResource extends ApplicationResource {
         requestProcessGroupDTO.setTargetUri(controllerUri);
 
         // create the remote process group
-        final RemoteProcessGroupEntity entity = serviceFacade.createRemoteProcessGroup(groupId, requestProcessGroupDTO);
+        final Revision revision = getRevision(remoteProcessGroupEntity, requestProcessGroupDTO.getId());
+        final RemoteProcessGroupEntity entity = serviceFacade.createRemoteProcessGroup(revision, groupId, requestProcessGroupDTO);
         remoteProcessGroupResource.populateRemainingRemoteProcessGroupEntityContent(entity);
 
-        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
+        return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
     }
 
     /**
@@ -1445,7 +1447,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get all the remote process groups
@@ -1517,6 +1519,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Connection details must be specified.");
         }
 
+        if (connectionEntity.getRevision() == null || (connectionEntity.getRevision().getVersion() == null || connectionEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Connection.");
+        }
+
         if (connectionEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Connection ID cannot be specified.");
         }
@@ -1540,7 +1546,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -1552,11 +1558,12 @@ public class ProcessGroupResource extends ApplicationResource {
         connection.setId(generateUuid());
 
         // create the new relationship target
-        final ConnectionEntity entity = serviceFacade.createConnection(groupId, connection);
+        final Revision revision = getRevision(connectionEntity, connection.getId());
+        final ConnectionEntity entity = serviceFacade.createConnection(revision, groupId, connection);
         connectionResource.populateRemainingConnectionEntityContent(entity);
 
         // extract the href and build the response
-        String uri = entity.getComponent().getUri();
+        String uri = entity.getUri();
         return clusterContext(generateCreatedResponse(URI.create(uri), entity)).build();
     }
 
@@ -1602,7 +1609,7 @@ public class ProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
+            processGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // all of the relationships for the specified source processor
@@ -1771,10 +1778,10 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
 
                 final Authorizable template = lookup.getTemplate(instantiateTemplateRequestEntity.getTemplateId());
-                template.authorize(authorizer, RequestAction.READ);
+                template.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -1805,67 +1812,11 @@ public class ProcessGroupResource extends ApplicationResource {
 
     private void authorizeSnippetUsage(final AuthorizableLookup lookup, final String groupId, final String snippetId) {
         // ensure write access to the target process group
-        lookup.getProcessGroup(groupId).authorize(authorizer, RequestAction.WRITE);
+        lookup.getProcessGroup(groupId).authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
 
         // ensure read permission to every component in the snippet
         final Snippet snippet = lookup.getSnippet(snippetId);
         authorizeSnippet(snippet, authorizer, lookup, RequestAction.READ);
-    }
-
-    /**
-     * Retrieves all the of templates in this NiFi.
-     *
-     * @return A templatesEntity.
-     */
-    @GET
-    @Consumes(MediaType.WILDCARD)
-    @Produces(MediaType.APPLICATION_JSON)
-    @Path("{id}/templates")
-    // TODO - @PreAuthorize("hasAnyRole('ROLE_MONITOR', 'ROLE_DFM', 'ROLE_ADMIN')")
-    @ApiOperation(
-        value = "Gets all templates",
-        response = TemplatesEntity.class,
-        authorizations = {
-            @Authorization(value = "Read Only", type = "ROLE_MONITOR"),
-            @Authorization(value = "Data Flow Manager", type = "ROLE_DFM"),
-            @Authorization(value = "Administrator", type = "ROLE_ADMIN")
-        }
-    )
-    @ApiResponses(
-        value = {
-            @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
-            @ApiResponse(code = 401, message = "Client could not be authenticated."),
-            @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
-            @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
-        }
-    )
-    public Response getTemplates(
-        @ApiParam(
-            value = "The process group id.",
-            required = true
-        )
-        @PathParam("id") final String groupId) {
-
-        if (isReplicateRequest()) {
-            return replicate(HttpMethod.GET);
-        }
-
-        // authorize access
-        serviceFacade.authorizeAccess(lookup -> {
-            final Authorizable processGroup = lookup.getProcessGroup(groupId);
-            processGroup.authorize(authorizer, RequestAction.READ);
-        });
-
-        // get all the templates
-        final Set<TemplateDTO> templates = templateResource.populateRemainingTemplatesContent(serviceFacade.getTemplates());
-
-        // create the response entity
-        final TemplatesEntity entity = new TemplatesEntity();
-        entity.setTemplates(templates);
-        entity.setGenerated(new Date());
-
-        // generate the response
-        return clusterContext(generateOkResponse(entity)).build();
     }
 
     /**
@@ -2006,8 +1957,14 @@ public class ProcessGroupResource extends ApplicationResource {
             final Map<String, String> headersToOverride = new HashMap<>();
             headersToOverride.put("content-type", MediaType.APPLICATION_XML);
 
-            // replicate the request
-            return getRequestReplicator().replicate(HttpMethod.POST, importUri, entity, getHeaders(headersToOverride)).awaitMergedResponse().getResponse();
+            // Determine whether we should replicate only to the cluster coordinator, or if we should replicate directly
+            // to the cluster nodes themselves.
+            if (getReplicationTarget() == ReplicationTarget.CLUSTER_NODES) {
+                return getRequestReplicator().replicate(HttpMethod.POST, importUri, entity, getHeaders(headersToOverride)).awaitMergedResponse().getResponse();
+            } else {
+                final Set<NodeIdentifier> coordinatorNode = Collections.singleton(getClusterCoordinatorNode());
+                return getRequestReplicator().replicate(coordinatorNode, HttpMethod.POST, importUri, entity, getHeaders(headersToOverride), false).awaitMergedResponse().getResponse();
+            }
         }
 
         // otherwise import the template locally
@@ -2045,7 +2002,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -2127,6 +2084,10 @@ public class ProcessGroupResource extends ApplicationResource {
             throw new IllegalArgumentException("Controller service details must be specified.");
         }
 
+        if (controllerServiceEntity.getRevision() == null || (controllerServiceEntity.getRevision().getVersion() == null || controllerServiceEntity.getRevision().getVersion() != 0)) {
+            throw new IllegalArgumentException("A revision of 0 must be specified when creating a new Controller service.");
+        }
+
         if (controllerServiceEntity.getComponent().getId() != null) {
             throw new IllegalArgumentException("Controller service ID cannot be specified.");
         }
@@ -2151,7 +2112,7 @@ public class ProcessGroupResource extends ApplicationResource {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
                 final Authorizable processGroup = lookup.getProcessGroup(groupId);
-                processGroup.authorize(authorizer, RequestAction.WRITE);
+                processGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
         }
         if (validationPhase) {
@@ -2162,11 +2123,12 @@ public class ProcessGroupResource extends ApplicationResource {
         controllerServiceEntity.getComponent().setId(generateUuid());
 
         // create the controller service and generate the json
-        final ControllerServiceEntity entity = serviceFacade.createControllerService(groupId, controllerServiceEntity.getComponent());
-        controllerServiceResource.populateRemainingControllerServiceContent(entity.getComponent());
+        final Revision revision = getRevision(controllerServiceEntity, controllerServiceEntity.getComponent().getId());
+        final ControllerServiceEntity entity = serviceFacade.createControllerService(revision, groupId, controllerServiceEntity.getComponent());
+        controllerServiceResource.populateRemainingControllerServiceEntityContent(entity);
 
         // build the response
-        return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
+        return clusterContext(generateCreatedResponse(URI.create(entity.getUri()), entity)).build();
     }
 
     // setters

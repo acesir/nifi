@@ -56,6 +56,10 @@ nf.ng.TemplateComponent = function (serviceProvider) {
 
     function TemplateComponent() {
 
+        this.icon = 'icon icon-template';
+
+        this.hoverIcon = 'icon icon-template-add';
+
         /**
          * The template component's modal.
          */
@@ -76,7 +80,8 @@ nf.ng.TemplateComponent = function (serviceProvider) {
             init: function () {
                 // configure the instantiate template dialog
                 this.getElement().modal({
-                    headerText: 'Instantiate Template',
+                    scrollableContentStyle: 'scrollable',
+                    headerText: 'Add Template',
                     overlayBackgroud: false
                 });
             },
@@ -106,6 +111,7 @@ nf.ng.TemplateComponent = function (serviceProvider) {
             }
         };
     }
+
     TemplateComponent.prototype = {
         constructor: TemplateComponent,
 
@@ -114,21 +120,21 @@ nf.ng.TemplateComponent = function (serviceProvider) {
          *
          * @returns {*|jQuery|HTMLElement}
          */
-        getElement: function() {
+        getElement: function () {
             return $('#template-component');
         },
 
         /**
          * Enable the component.
          */
-        enabled: function() {
+        enabled: function () {
             this.getElement().attr('disabled', false);
         },
 
         /**
          * Disable the component.
          */
-        disabled: function() {
+        disabled: function () {
             this.getElement().attr('disabled', true);
         },
 
@@ -137,8 +143,18 @@ nf.ng.TemplateComponent = function (serviceProvider) {
          *
          * @argument {object} pt        The point that the component was dropped.
          */
-        dropHandler: function(pt) {
+        dropHandler: function (pt) {
             this.promptForTemplate(pt);
+        },
+
+        /**
+         * The drag icon for the toolbox component.
+         *
+         * @param event
+         * @returns {*|jQuery|HTMLElement}
+         */
+        dragIcon: function (event) {
+            return $('<div class="icon icon-template-add"></div>');
         },
 
         /**
@@ -146,22 +162,24 @@ nf.ng.TemplateComponent = function (serviceProvider) {
          *
          * @argument {object} pt        The point that the template was dropped.
          */
-        promptForTemplate: function(pt) {
+        promptForTemplate: function (pt) {
             var self = this;
             $.ajax({
                 type: 'GET',
-                url: serviceProvider.headerCtrl.toolboxCtrl.config.urls.api + '/process-groups/' + encodeURIComponent(nf.Canvas.getGroupId()) + '/templates',
+                url: serviceProvider.headerCtrl.toolboxCtrl.config.urls.api + '/flow/templates',
                 dataType: 'json'
             }).done(function (response) {
                 var templates = response.templates;
                 if (nf.Common.isDefinedAndNotNull(templates) && templates.length > 0) {
                     var options = [];
-                    $.each(templates, function (_, template) {
-                        options.push({
-                            text: template.name,
-                            value: template.id,
-                            description: nf.Common.escapeHtml(template.description)
-                        });
+                    $.each(templates, function (_, templateEntity) {
+                        if (templateEntity.permissions.canRead === true) {
+                            options.push({
+                                text: templateEntity.template.name,
+                                value: templateEntity.id,
+                                description: nf.Common.escapeHtml(templateEntity.template.description)
+                            });
+                        }
                     });
 
                     // configure the templates combo
@@ -173,6 +191,11 @@ nf.ng.TemplateComponent = function (serviceProvider) {
                     // update the button model
                     self.modal.update('setButtonModel', [{
                         buttonText: 'Add',
+                        color: {
+                            base: '#728E9B',
+                            hover: '#004849',
+                            text: '#ffffff'
+                        },
                         handler: {
                             click: function () {
                                 // get the type of processor currently selected
@@ -186,22 +209,27 @@ nf.ng.TemplateComponent = function (serviceProvider) {
                                 createTemplate(templateId, pt);
                             }
                         }
-                    }, {
-                        buttonText: 'Cancel',
-                        handler: {
-                            click: function () {
-                                self.modal.hide();
+                    },
+                        {
+                            buttonText: 'Cancel',
+                            color: {
+                                base: '#E3E8EB',
+                                hover: '#C7D2D7',
+                                text: '#004849'
+                            },
+                            handler: {
+                                click: function () {
+                                    self.modal.hide();
+                                }
                             }
-                        }
-                    }]);
+                        }]);
 
                     // show the dialog
                     self.modal.show();
                 } else {
                     nf.Dialog.showOkDialog({
                         headerText: 'Instantiate Template',
-                        dialogContent: 'No templates have been loaded into this NiFi.',
-                        overlayBackground: false
+                        dialogContent: 'No templates have been loaded into this NiFi.'
                     });
                 }
 

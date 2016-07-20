@@ -33,29 +33,30 @@ public class StandardDataFlow implements Serializable, DataFlow {
 
     private final byte[] flow;
     private final byte[] snippetBytes;
-
-    private boolean autoStartProcessors;
+    private final byte[] authorizerFingerprint;
 
     /**
      * Constructs an instance.
      *
      * @param flow a valid flow as bytes, which cannot be null
      * @param snippetBytes an XML representation of snippets.  May be null.
+     * @param authorizerFingerprint the bytes of the Authorizer's fingerprint. May be null when using an external Authorizer.
      *
      * @throws NullPointerException if flow is null
      */
-    public StandardDataFlow(final byte[] flow, final byte[] snippetBytes) {
+    public StandardDataFlow(final byte[] flow, final byte[] snippetBytes, final byte[] authorizerFingerprint) {
         if(flow == null){
             throw new NullPointerException("Flow cannot be null");
         }
         this.flow = flow;
         this.snippetBytes = snippetBytes;
+        this.authorizerFingerprint = authorizerFingerprint;
     }
 
     public StandardDataFlow(final DataFlow toCopy) {
         this.flow = copy(toCopy.getFlow());
         this.snippetBytes = copy(toCopy.getSnippets());
-        this.autoStartProcessors = toCopy.isAutoStartProcessors();
+        this.authorizerFingerprint = copy(toCopy.getAuthorizerFingerprint());
     }
 
     private static byte[] copy(final byte[] bytes) {
@@ -74,18 +75,8 @@ public class StandardDataFlow implements Serializable, DataFlow {
     }
 
     @Override
-    public boolean isAutoStartProcessors() {
-        return autoStartProcessors;
+    public byte[] getAuthorizerFingerprint() {
+        return authorizerFingerprint;
     }
 
-    /**
-     *
-     * Sets the flag to automatically start processors at application startup.
-     *
-     * @param autoStartProcessors true if processors should be automatically
-     * started at application startup; false otherwise
-     */
-    public void setAutoStartProcessors(final boolean autoStartProcessors) {
-        this.autoStartProcessors = autoStartProcessors;
-    }
 }

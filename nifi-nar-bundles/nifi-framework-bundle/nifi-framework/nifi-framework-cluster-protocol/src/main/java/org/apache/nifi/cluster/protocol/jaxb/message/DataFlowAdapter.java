@@ -32,7 +32,7 @@ public class DataFlowAdapter extends XmlAdapter<AdaptedDataFlow, DataFlow> {
         if (df != null) {
             aDf.setFlow(df.getFlow());
             aDf.setSnippets(df.getSnippets());
-            aDf.setAutoStartProcessors(df.isAutoStartProcessors());
+            aDf.setAuthorizerFingerprint(df.getAuthorizerFingerprint());
         }
 
         return aDf;
@@ -40,8 +40,7 @@ public class DataFlowAdapter extends XmlAdapter<AdaptedDataFlow, DataFlow> {
 
     @Override
     public DataFlow unmarshal(final AdaptedDataFlow aDf) {
-        final StandardDataFlow dataFlow = new StandardDataFlow(aDf.getFlow(), aDf.getSnippets());
-        dataFlow.setAutoStartProcessors(aDf.isAutoStartProcessors());
+        final StandardDataFlow dataFlow = new StandardDataFlow(aDf.getFlow(), aDf.getSnippets(), aDf.getAuthorizerFingerprint());
         return dataFlow;
     }
 

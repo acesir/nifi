@@ -25,37 +25,27 @@ nf.Actions = (function () {
             controller: '../nifi-api/controller'
         }
     };
-    
+
     /**
      * Initializes the drop request status dialog.
      */
     var initializeDropRequestStatusDialog = function () {
-        // initialize the drop requst progress bar
-        var dropRequestProgressBar = $('#drop-request-percent-complete').progressbar();
-
         // configure the drop request status dialog
         $('#drop-request-status-dialog').modal({
-            overlayBackground: false,
+            scrollableContentStyle: 'scrollable',
             handler: {
                 close: function () {
-                    // reset the progress bar
-                    dropRequestProgressBar.find('div.progress-label').remove();
-
-                    // update the progress bar
-                    var label = $('<div class="progress-label"></div>').text('0%');
-                    dropRequestProgressBar.progressbar('value', 0).append(label);
-                    
                     // clear the current button model
                     $('#drop-request-status-dialog').modal('setButtonModel', []);
                 }
             }
         });
     };
-    
+
 
     /**
      * Updates the resource with the specified entity.
-     * 
+     *
      * @param {string} uri
      * @param {object} entity
      */
@@ -69,8 +59,8 @@ nf.Actions = (function () {
         }).fail(function (xhr, status, error) {
             if (xhr.status === 400 || xhr.status === 404 || xhr.status === 409) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: nf.Common.escapeHtml(xhr.responseText),
-                    overlayBackground: true
+                    headerText: 'Update Resource',
+                    dialogContent: nf.Common.escapeHtml(xhr.responseText)
                 });
             }
         });
@@ -97,10 +87,10 @@ nf.Actions = (function () {
         init: function () {
             initializeDropRequestStatusDialog();
         },
-        
+
         /**
          * Enters the specified process group.
-         * 
+         *
          * @param {selection} selection     The the currently selected component
          */
         enterGroup: function (selection) {
@@ -109,17 +99,17 @@ nf.Actions = (function () {
                 nf.CanvasUtils.enterGroup(selectionData.id);
             }
         },
-        
+
         /**
          * Exits the current process group but entering the parent group.
          */
         leaveGroup: function () {
             nf.CanvasUtils.enterGroup(nf.Canvas.getParentGroupId());
         },
-        
+
         /**
          * Refresh the flow of the remote process group in the specified selection.
-         * 
+         *
          * @param {selection} selection
          */
         refreshRemoteFlow: function (selection) {
@@ -134,16 +124,16 @@ nf.Actions = (function () {
                     // update the UI to show last refreshed if appropriate
                     if (selection.classed('visible')) {
                         selection.select('text.remote-process-group-last-refresh')
-                                .text(function () {
-                                    return lastRefreshed;
-                                });
+                            .text(function () {
+                                return lastRefreshed;
+                            });
                     }
                 };
 
                 var poll = function (nextDelay) {
                     $.ajax({
                         type: 'GET',
-                        url: d.component.uri,
+                        url: d.uri,
                         dataType: 'json'
                     }).done(function (response) {
                         var remoteProcessGroup = response.component;
@@ -157,7 +147,7 @@ nf.Actions = (function () {
                             // reload the group's connections
                             var connections = nf.Connection.getComponentConnections(remoteProcessGroup.id);
                             $.each(connections, function (_, connection) {
-                                if (connection.accessPolicy.canRead) {
+                                if (connection.permissions.canRead) {
                                     nf.Connection.reload(connection.component);
                                 }
                             });
@@ -180,10 +170,10 @@ nf.Actions = (function () {
                 poll(1);
             }
         },
-        
+
         /**
          * Opens the remote process group in the specified selection.
-         * 
+         *
          * @param {selection} selection         The selection
          */
         openUri: function (selection) {
@@ -195,15 +185,16 @@ nf.Actions = (function () {
                     window.open(encodeURI(uri));
                 } else {
                     nf.Dialog.showOkDialog({
+                        headerText: 'Remote Process Group',
                         dialogContent: 'No target URI defined.'
                     });
                 }
             }
         },
-        
+
         /**
          * Shows and selects the source of the connection in the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection
          */
         showSource: function (selection) {
@@ -224,10 +215,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Shows and selects the destination of the connection in the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection
          */
         showDestination: function (selection) {
@@ -248,10 +239,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Shows the downstream components from the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection
          */
         showDownstream: function (selection) {
@@ -271,10 +262,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Shows the upstream components from the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection
          */
         showUpstream: function (selection) {
@@ -294,10 +285,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Shows and selects the component in the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection
          */
         show: function (selection) {
@@ -311,26 +302,26 @@ nf.Actions = (function () {
                 nf.Actions.center(selection);
             }
         },
-        
+
         /**
          * Selects all components in the specified selection.
-         * 
+         *
          * @param {selection} selection     Selection of components to select
          */
         select: function (selection) {
             selection.classed('selected', true);
         },
-        
+
         /**
          * Selects all components.
          */
         selectAll: function () {
             nf.Actions.select(d3.selectAll('g.component, g.connection'));
         },
-        
+
         /**
          * Centers the component in the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         center: function (selection) {
@@ -377,7 +368,7 @@ nf.Actions = (function () {
                 });
             }
         },
-        
+
         /**
          * Enables all eligible selected components.
          *
@@ -388,8 +379,8 @@ nf.Actions = (function () {
 
             if (componentsToEnable.empty()) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: 'No eligible components are selected. Please select the components to be enabled and ensure they are no longer running.',
-                    overlayBackground: true
+                    headerText: 'Enable Components',
+                    dialogContent: 'No eligible components are selected. Please select the components to be enabled and ensure they are no longer running.'
                 });
             } else {
                 var enableRequests = [];
@@ -407,7 +398,7 @@ nf.Actions = (function () {
                         }
                     };
 
-                    enableRequests.push(updateResource(d.component.uri, entity).done(function (response) {
+                    enableRequests.push(updateResource(d.uri, entity).done(function (response) {
                         nf[d.type].set(response);
                     }));
                 });
@@ -420,7 +411,7 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Disables all eligible selected components.
          *
@@ -431,8 +422,8 @@ nf.Actions = (function () {
 
             if (componentsToDisable.empty()) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: 'No eligible components are selected. Please select the components to be disabled and ensure they are no longer running.',
-                    overlayBackground: true
+                    headerText: 'Disable Components',
+                    dialogContent: 'No eligible components are selected. Please select the components to be disabled and ensure they are no longer running.'
                 });
             } else {
                 var disableRequests = [];
@@ -450,7 +441,7 @@ nf.Actions = (function () {
                         }
                     };
 
-                    disableRequests.push(updateResource(d.component.uri, entity).done(function (response) {
+                    disableRequests.push(updateResource(d.uri, entity).done(function (response) {
                         nf[d.type].set(response);
                     }));
                 });
@@ -463,7 +454,7 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Opens provenance with the component in the specified selection.
          *
@@ -475,14 +466,14 @@ nf.Actions = (function () {
 
                 // open the provenance page with the specified component
                 nf.Shell.showPage('provenance?' + $.param({
-                    componentId: selectionData.id
-                }));
+                        componentId: selectionData.id
+                    }));
             }
         },
 
         /**
          * Starts the components in the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         start: function (selection) {
@@ -502,8 +493,8 @@ nf.Actions = (function () {
                 // ensure there are startable components selected
                 if (componentsToStart.empty()) {
                     nf.Dialog.showOkDialog({
-                        dialogContent: 'No eligible components are selected. Please select the components to be started and ensure they are no longer running.',
-                        overlayBackground: true
+                        headerText: 'Start Components',
+                        dialogContent: 'No eligible components are selected. Please select the components to be started and ensure they are no longer running.'
                     });
                 } else {
                     var startRequests = [];
@@ -512,33 +503,28 @@ nf.Actions = (function () {
                     componentsToStart.each(function (d) {
                         var selected = d3.select(this);
 
-                        // processor endpoint does not use running flag...
-                        var component = {
-                            'id': d.id,
-                        };
-                        if (nf.CanvasUtils.isProcessor(selected) || nf.CanvasUtils.isInputPort(selected) || nf.CanvasUtils.isOutputPort(selected)) {
-                            component['state'] = 'RUNNING';
+                        // prepare the request
+                        var uri, entity;
+                        if (nf.CanvasUtils.isProcessGroup(selected)) {
+                            uri = config.urls.api + '/flow/process-groups/' + encodeURIComponent(d.id);
+                            entity = {
+                                'id': d.id,
+                                'state': 'RUNNING'
+                            }
                         } else {
-                            component['running'] = true;
+                            uri = d.uri;
+                            entity = {
+                                'revision': nf.Client.getRevision(d),
+                                'component': {
+                                    'id': d.id,
+                                    'state': 'RUNNING'
+                                }
+                            };
                         }
 
-                        // build the entity
-                        var entity = {
-                            'revision': nf.Client.getRevision(d),
-                            'component': component
-                        };
-
-                        startRequests.push(updateResource(d.component.uri, entity).done(function (response) {
+                        startRequests.push(updateResource(uri, entity).done(function (response) {
                             if (nf.CanvasUtils.isProcessGroup(selected)) {
-                                nf.ProcessGroup.set(response);
-
-                                // reload the group's connections
-                                var connections = nf.Connection.getComponentConnections(response.id);
-                                $.each(connections, function (_, connection) {
-                                    if (connection.accessPolicy.canRead) {
-                                        nf.Connection.reload(connection.component);
-                                    }
-                                });
+                                nf.ProcessGroup.reload(d.component);
                             } else {
                                 nf[d.type].set(response);
                             }
@@ -554,10 +540,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Stops the components in the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         stop: function (selection) {
@@ -577,8 +563,8 @@ nf.Actions = (function () {
                 // ensure there are some component to stop
                 if (componentsToStop.empty()) {
                     nf.Dialog.showOkDialog({
-                        dialogContent: 'No eligible components are selected. Please select the components to be stopped.',
-                        overlayBackground: true
+                        headerText: 'Stop Components',
+                        dialogContent: 'No eligible components are selected. Please select the components to be stopped.'
                     });
                 } else {
                     var stopRequests = [];
@@ -587,33 +573,28 @@ nf.Actions = (function () {
                     componentsToStop.each(function (d) {
                         var selected = d3.select(this);
 
-                        // processor endpoint does not use running flag...
-                        var component = {
-                            'id': d.id,
-                        };
-                        if (nf.CanvasUtils.isProcessor(selected) || nf.CanvasUtils.isInputPort(selected) || nf.CanvasUtils.isOutputPort(selected)) {
-                            component['state'] = 'STOPPED';
+                        // prepare the request
+                        var uri, entity;
+                        if (nf.CanvasUtils.isProcessGroup(selected)) {
+                            uri = config.urls.api + '/flow/process-groups/' + encodeURIComponent(d.id);
+                            entity = {
+                                'id': d.id,
+                                'state': 'STOPPED'
+                            };
                         } else {
-                            component['running'] = false;
+                            uri = d.uri;
+                            entity = {
+                                'revision': nf.Client.getRevision(d),
+                                'component': {
+                                    'id': d.id,
+                                    'state': 'STOPPED'
+                                }
+                            };
                         }
 
-                        // build the entity
-                        var entity = {
-                            'revision': nf.Client.getRevision(d),
-                            'component': component
-                        };
-
-                        stopRequests.push(updateResource(d.component.uri, entity).done(function (response) {
+                        stopRequests.push(updateResource(uri, entity).done(function (response) {
                             if (nf.CanvasUtils.isProcessGroup(selected)) {
-                                nf.ProcessGroup.set(response);
-
-                                // reload the group's connections
-                                var connections = nf.Connection.getComponentConnections(response.id);
-                                $.each(connections, function (_, connection) {
-                                    if (connection.accessPolicy.canRead) {
-                                        nf.Connection.reload(connection.component);
-                                    }
-                                });
+                                nf.ProcessGroup.reload(d.component);
                             } else {
                                 nf[d.type].set(response);
                             }
@@ -629,10 +610,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Enables transmission for the components in the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         enableTransmission: function (selection) {
@@ -652,15 +633,15 @@ nf.Actions = (function () {
                 };
 
                 // start transmitting
-                updateResource(d.component.uri, entity).done(function (response) {
+                updateResource(d.uri, entity).done(function (response) {
                     nf.RemoteProcessGroup.set(response);
                 });
             });
         },
-        
+
         /**
          * Disables transmission for the components in the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         disableTransmission: function (selection) {
@@ -679,15 +660,15 @@ nf.Actions = (function () {
                     }
                 };
 
-                updateResource(d.component.uri, entity).done(function (response) {
+                updateResource(d.uri, entity).done(function (response) {
                     nf.RemoteProcessGroup.set(response);
                 });
             });
         },
-        
+
         /**
          * Shows the configuration dialog for the specified selection.
-         * 
+         *
          * @param {selection} selection     Selection of the component to be configured
          */
         showConfiguration: function (selection) {
@@ -710,17 +691,28 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
+        /**
+         * Opens the policy management page for the selected component.
+         *
+         * @param selection
+         */
+        managePolicies: function(selection) {
+            if (selection.size() <= 1) {
+                nf.PolicyManagement.showComponentPolicy(selection);
+            }
+        },
+
         // Defines an action for showing component details (like configuration but read only).
         showDetails: function (selection) {
             if (selection.empty()) {
-                nf.ProcessGroupDetails.showConfiguration(nf.Canvas.getGroupId());
+                nf.ProcessGroupConfiguration.showConfiguration(nf.Canvas.getGroupId());
             } else if (selection.size() === 1) {
                 var selectionData = selection.datum();
                 if (nf.CanvasUtils.isProcessor(selection)) {
                     nf.ProcessorDetails.showDetails(nf.Canvas.getGroupId(), selectionData.id);
                 } else if (nf.CanvasUtils.isProcessGroup(selection)) {
-                    nf.ProcessGroupDetails.showConfiguration(selectionData.id);
+                    nf.ProcessGroupConfiguration.showConfiguration(selectionData.id);
                 } else if (nf.CanvasUtils.isRemoteProcessGroup(selection)) {
                     nf.RemoteProcessGroupDetails.showDetails(selection);
                 } else if (nf.CanvasUtils.isInputPort(selection) || nf.CanvasUtils.isOutputPort(selection)) {
@@ -730,24 +722,24 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Shows the usage documentation for the component in the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection
          */
         showUsage: function (selection) {
             if (selection.size() === 1 && nf.CanvasUtils.isProcessor(selection)) {
                 var selectionData = selection.datum();
                 nf.Shell.showPage('../nifi-docs/documentation?' + $.param({
-                    select: nf.Common.substringAfterLast(selectionData.component.type, '.')
-                }));
+                        select: nf.Common.substringAfterLast(selectionData.component.type, '.')
+                    }));
             }
         },
-        
+
         /**
          * Shows the stats for the specified selection.
-         * 
+         *
          * @argument {selection} selection      The selection
          */
         showStats: function (selection) {
@@ -764,10 +756,10 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Opens the remote ports dialog for the remote process group in the specified selection.
-         * 
+         *
          * @param {selection} selection         The selection
          */
         remotePorts: function (selection) {
@@ -775,7 +767,7 @@ nf.Actions = (function () {
                 nf.RemoteProcessGroupPorts.showPorts(selection);
             }
         },
-        
+
         /**
          * Reloads the status for the entire canvas (components and flow.)
          */
@@ -784,17 +776,17 @@ nf.Actions = (function () {
                 'transition': true
             });
         },
-        
+
         /**
          * Deletes the component in the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection containing the component to be removed
          */
         'delete': function (selection) {
             if (nf.Common.isUndefined(selection) || selection.empty()) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: 'No eligible components are selected. Please select the components to be deleted.',
-                    overlayBackground: true
+                    headerText: 'Reload',
+                    dialogContent: 'No eligible components are selected. Please select the components to be deleted.'
                 });
             } else {
                 if (selection.size() === 1) {
@@ -803,7 +795,7 @@ nf.Actions = (function () {
 
                     $.ajax({
                         type: 'DELETE',
-                        url: selectionData.component.uri + '?' + $.param({
+                        url: selectionData.uri + '?' + $.param({
                             version: revision.version,
                             clientId: revision.clientId
                         }),
@@ -869,7 +861,7 @@ nf.Actions = (function () {
                                     nf[type].remove(ids);
                                 }
                             });
-                            
+
                             // then remove all the connections
                             if (components.has('Connection')) {
                                 nf.Connection.remove(components.get('Connection'));
@@ -885,28 +877,27 @@ nf.Actions = (function () {
                 }
             }
         },
-        
+
         /**
          * Deletes the flow files in the specified connection.
-         * 
+         *
          * @param {type} selection
          */
         emptyQueue: function (selection) {
             if (selection.size() !== 1 || !nf.CanvasUtils.isConnection(selection)) {
                 return;
             }
-            
+
             // prompt the user before emptying the queue
             nf.Dialog.showYesNoDialog({
                 headerText: 'Empty Queue',
                 dialogContent: 'Are you sure you want to empty this queue? All FlowFiles waiting at the time of the request will be removed.',
-                overlayBackground: false,
                 noText: 'Cancel',
                 yesText: 'Empty',
                 yesHandler: function () {
                     // get the connection data
                     var connection = selection.datum();
-                    
+
                     var MAX_DELAY = 4;
                     var cancelled = false;
                     var dropRequest = null;
@@ -917,33 +908,37 @@ nf.Actions = (function () {
                         // remove existing labels
                         var progressBar = $('#drop-request-percent-complete');
                         progressBar.find('div.progress-label').remove();
+                        progressBar.find('md-progress-linear').remove();
 
                         // update the progress bar
                         var label = $('<div class="progress-label"></div>').text(percentComplete + '%');
-                        if (percentComplete > 0) {
-                            label.css('margin-top', '-19px');
-                        }
-                        progressBar.progressbar('value', percentComplete).append(label);
+                        (nf.ng.Bridge.injector.get('$compile')($('<md-progress-linear ng-cloak ng-value="' + percentComplete + '" class="md-hue-2" md-mode="determinate" aria-label="Drop request percent complete"></md-progress-linear>'))(nf.ng.Bridge.rootScope)).appendTo(progressBar);
+                        progressBar.append(label);
                     };
 
                     // update the button model of the drop request status dialog
                     $('#drop-request-status-dialog').modal('setButtonModel', [{
-                            buttonText: 'Stop',
-                            handler: {
-                                click: function () {
-                                    cancelled = true;
+                        buttonText: 'Stop',
+                        color: {
+                            base: '#728E9B',
+                            hover: '#004849',
+                            text: '#ffffff'
+                        },
+                        handler: {
+                            click: function () {
+                                cancelled = true;
 
-                                    // we are waiting for the next poll attempt
-                                    if (dropRequestTimer !== null) {
-                                        // cancel it
-                                        clearTimeout(dropRequestTimer);
+                                // we are waiting for the next poll attempt
+                                if (dropRequestTimer !== null) {
+                                    // cancel it
+                                    clearTimeout(dropRequestTimer);
 
-                                        // cancel the drop request
-                                        completeDropRequest();
-                                    }
+                                    // cancel the drop request
+                                    completeDropRequest();
                                 }
                             }
-                        }]);
+                        }
+                    }]);
 
                     // completes the drop request by removing it and showing how many flowfiles were deleted
                     var completeDropRequest = function () {
@@ -952,16 +947,16 @@ nf.Actions = (function () {
                                 type: 'DELETE',
                                 url: dropRequest.uri,
                                 dataType: 'json'
-                            }).done(function(response) {
+                            }).done(function (response) {
                                 // report the results of this drop request
                                 dropRequest = response.dropRequest;
-                                
+
                                 // build the results
                                 var droppedTokens = dropRequest.dropped.split(/ \/ /);
                                 var results = $('<div></div>');
                                 $('<span class="label"></span>').text(droppedTokens[0]).appendTo(results);
                                 $('<span></span>').text(' FlowFiles (' + droppedTokens[1] + ')').appendTo(results);
-                                
+
                                 // if the request did not complete, include the original
                                 if (dropRequest.percentCompleted < 100) {
                                     var originalTokens = dropRequest.original.split(/ \/ /);
@@ -969,27 +964,27 @@ nf.Actions = (function () {
                                     $('<span></span>').text(' (' + originalTokens[1] + ')').appendTo(results);
                                 }
                                 $('<span></span>').text(' were removed from the queue.').appendTo(results);
-                                
+
                                 // if this request failed so the error
                                 if (nf.Common.isDefinedAndNotNull(dropRequest.failureReason)) {
                                     $('<br/><br/><span></span>').text(dropRequest.failureReason).appendTo(results);
                                 }
-                                
+
                                 // display the results
                                 nf.Dialog.showOkDialog({
-                                    dialogContent: results,
-                                    overlayBackground: false
+                                    headerText: 'Empty Queue',
+                                    dialogContent: results
                                 });
-                            }).always(function() {
+                            }).always(function () {
                                 $('#drop-request-status-dialog').modal('hide');
                             });
                         } else {
                             // nothing was removed
                             nf.Dialog.showOkDialog({
-                                dialogContent: 'No FlowFiles were removed.',
-                                overlayBackground: false
+                                headerText: 'Empty Queue',
+                                dialogContent: 'No FlowFiles were removed.'
                             });
-                            
+
                             // close the dialog
                             $('#drop-request-status-dialog').modal('hide');
                         }
@@ -1002,13 +997,13 @@ nf.Actions = (function () {
 
                         // update the status of the drop request
                         $('#drop-request-status-message').text(dropRequest.state);
-                        
+
                         // update the current number of enqueued flowfiles
                         if (nf.Common.isDefinedAndNotNull(connection.status) && nf.Common.isDefinedAndNotNull(dropRequest.currentCount)) {
                             connection.status.queued = dropRequest.current;
                             nf.Connection.refresh(connection.id);
                         }
-                        
+
                         // close the dialog if the 
                         if (dropRequest.finished === true || cancelled === true) {
                             completeDropRequest();
@@ -1030,7 +1025,7 @@ nf.Actions = (function () {
                             type: 'GET',
                             url: dropRequest.uri,
                             dataType: 'json'
-                        }).done(function(response) {
+                        }).done(function (response) {
                             dropRequest = response.dropRequest;
                             processDropRequest(nextDelay);
                         }).fail(completeDropRequest);
@@ -1042,13 +1037,13 @@ nf.Actions = (function () {
                         url: '../nifi-api/flowfile-queues/' + connection.id + '/drop-requests',
                         dataType: 'json',
                         contentType: 'application/json'
-                    }).done(function(response) {
+                    }).done(function (response) {
                         // initialize the progress bar value
                         updateProgress(0);
-                        
+
                         // show the progress dialog
                         $('#drop-request-status-dialog').modal('show');
-                        
+
                         // process the drop request
                         dropRequest = response.dropRequest;
                         processDropRequest(1);
@@ -1088,12 +1083,12 @@ nf.Actions = (function () {
             var processor = selection.datum();
 
             // view the state for the selected processor
-            nf.ComponentState.showState(processor.component, nf.CanvasUtils.supportsModification(selection));
+            nf.ComponentState.showState(processor, nf.CanvasUtils.supportsModification(selection));
         },
 
         /**
          * Opens the fill color dialog for the component in the specified selection.
-         * 
+         *
          * @param {type} selection      The selection
          */
         fillColor: function (selection) {
@@ -1101,18 +1096,18 @@ nf.Actions = (function () {
                 // we know that the entire selection is processors or labels... this
                 // checks if the first item is a processor... if true, all processors
                 var allProcessors = nf.CanvasUtils.isProcessor(selection);
-                
+
                 var color;
                 if (allProcessors) {
                     color = nf.Processor.defaultColor();
                 } else {
                     color = nf.Label.defaultColor();
                 }
-                
+
                 // if there is only one component selected, get its color otherwise use default
                 if (selection.size() === 1) {
                     var selectionData = selection.datum();
-                    
+
                     // use the specified color if appropriate
                     if (nf.Common.isDefinedAndNotNull(selectionData.component.style['background-color'])) {
                         color = selectionData.component.style['background-color'];
@@ -1135,7 +1130,7 @@ nf.Actions = (function () {
                 $('#fill-color-dialog').modal('show');
             }
         },
-        
+
         /**
          * Groups the currently selected components into a new group.
          */
@@ -1153,13 +1148,13 @@ nf.Actions = (function () {
                 var origin = nf.CanvasUtils.getOrigin(selection);
 
                 var pt = {'x': origin.x, 'y': origin.y};
-                $.when(nf.ng.Bridge.get('appCtrl.serviceProvider.headerCtrl.toolboxCtrl.groupComponent').promptForGroupName(pt)).done(function (processGroup) {
+                $.when(nf.ng.Bridge.injector.get('groupComponent').promptForGroupName(pt)).done(function (processGroup) {
                     var group = d3.select('#id-' + processGroup.id);
                     nf.CanvasUtils.moveComponents(selection, group);
                 });
             });
         },
-        
+
         /**
          * Moves the currently selected component into the current parent group.
          */
@@ -1170,11 +1165,18 @@ nf.Actions = (function () {
             if (selection.empty()) {
                 return;
             }
-            
+
             // move the current selection into the parent group
             nf.CanvasUtils.moveComponentsToParent(selection);
         },
-        
+
+        /**
+         * Uploads a new template.
+         */
+        uploadTemplate: function () {
+            $('#upload-template-dialog').modal('show');
+        },
+
         /**
          * Creates a new template based off the currently selected components. If no components
          * are selected, a template of the entire canvas is made.
@@ -1190,8 +1192,8 @@ nf.Actions = (function () {
             // ensure that components have been specified
             if (selection.empty()) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: "The current selection is not valid to create a template.",
-                    overlayBackground: false
+                    headerText: 'Create Template',
+                    dialogContent: "The current selection is not valid to create a template."
                 });
                 return;
             }
@@ -1202,23 +1204,28 @@ nf.Actions = (function () {
             // ensure that components specified are valid
             if (selection.empty()) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: "The current selection is not valid to create a template.",
-                    overlayBackground: false
+                    headerText: 'Create Template',
+                    dialogContent: "The current selection is not valid to create a template."
                 });
                 return;
             }
 
             // prompt for the template name
             $('#new-template-dialog').modal('setButtonModel', [{
-                    buttonText: 'Create',
-                    handler: {
-                        click: function () {
-                            // hide the dialog
-                            $('#new-template-dialog').modal('hide');
+                buttonText: 'Create',
+                color: {
+                    base: '#728E9B',
+                    hover: '#004849',
+                    text: '#ffffff'
+                },
+                handler: {
+                    click: function () {
+                        // hide the dialog
+                        $('#new-template-dialog').modal('hide');
 
-                            // get the template details
-                            var templateName = $('#new-template-name').val();
-                            var templateDescription = $('#new-template-description').val();
+                        // get the template details
+                        var templateName = $('#new-template-name').val();
+                        var templateDescription = $('#new-template-description').val();
 
                             // create a snippet
                             var snippet = nf.Snippet.marshal(selection);
@@ -1241,8 +1248,8 @@ nf.Actions = (function () {
                                 }).done(function () {
                                     // show the confirmation dialog
                                     nf.Dialog.showOkDialog({
-                                        dialogContent: "Template '" + nf.Common.escapeHtml(templateName) + "' was successfully created.",
-                                        overlayBackground: false
+                                        headerText: 'Create Template',
+                                        dialogContent: "Template '" + nf.Common.escapeHtml(templateName) + "' was successfully created."
                                     });
                                 }).always(function () {
                                     // clear the template dialog fields
@@ -1254,6 +1261,11 @@ nf.Actions = (function () {
                     }
                 }, {
                     buttonText: 'Cancel',
+                    color: {
+                        base: '#E3E8EB',
+                        hover: '#C7D2D7',
+                        text: '#004849'
+                    },
                     handler: {
                         click: function () {
                             $('#new-template-dialog').modal('hide');
@@ -1264,10 +1276,10 @@ nf.Actions = (function () {
             // auto focus on the template name
             $('#new-template-name').focus();
         },
-        
+
         /**
          * Copies the component in the specified selection.
-         * 
+         *
          * @param {selection} selection     The selection containing the component to be copied
          */
         copy: function (selection) {
@@ -1284,10 +1296,10 @@ nf.Actions = (function () {
                 origin: origin
             });
         },
-        
+
         /**
          * Pastes the currently copied selection.
-         * 
+         *
          * @param {selection} selection     The selection containing the component to be copied
          * @param {obj} evt                 The mouse event
          */
@@ -1368,16 +1380,16 @@ nf.Actions = (function () {
                     }
 
                     nf.Dialog.showOkDialog({
-                        dialogContent: nf.Common.escapeHtml(message),
-                        overlayBackground: true
+                        headerText: 'Paste Error',
+                        dialogContent: nf.Common.escapeHtml(message)
                     });
                 });
             });
         },
-        
+
         /**
          * Moves the connection in the specified selection to the front.
-         * 
+         *
          * @param {selection} selection
          */
         toFront: function (selection) {
@@ -1413,7 +1425,7 @@ nf.Actions = (function () {
                 // update the edge in question
                 $.ajax({
                     type: 'PUT',
-                    url: connection.component.uri,
+                    url: connection.uri,
                     data: JSON.stringify(connectionEntity),
                     dataType: 'json',
                     contentType: 'application/json'

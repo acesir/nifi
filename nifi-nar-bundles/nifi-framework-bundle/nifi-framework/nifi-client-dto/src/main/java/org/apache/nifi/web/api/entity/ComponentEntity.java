@@ -17,11 +17,14 @@
 package org.apache.nifi.web.api.entity;
 
 import com.wordnik.swagger.annotations.ApiModelProperty;
-import org.apache.nifi.web.api.dto.AccessPolicyDTO;
+import org.apache.nifi.web.api.dto.BulletinDTO;
+import org.apache.nifi.web.api.dto.PermissionsDTO;
 import org.apache.nifi.web.api.dto.PositionDTO;
 import org.apache.nifi.web.api.dto.RevisionDTO;
 
 import javax.xml.bind.annotation.XmlRootElement;
+import java.util.List;
+import java.util.Objects;
 
 /**
  * A base type for request/response entities.
@@ -33,7 +36,8 @@ public class ComponentEntity extends Entity {
     private String id;
     private String uri;
     private PositionDTO position;
-    private AccessPolicyDTO accessPolicy;
+    private PermissionsDTO permissions;
+    private List<BulletinDTO> bulletins;
 
     /**
      * @return revision for this request/response
@@ -71,7 +75,7 @@ public class ComponentEntity extends Entity {
      * @return The uri
      */
     @ApiModelProperty(
-        value = "The URI for futures requests to the component."
+            value = "The URI for futures requests to the component."
     )
     public String getUri() {
         return uri;
@@ -98,24 +102,40 @@ public class ComponentEntity extends Entity {
     }
 
     /**
-     * The access policy for this component.
+     * The permissions for this component.
      *
-     * @return The access policy
+     * @return The permissions
      */
     @ApiModelProperty(
-        value = "The access policy for this component."
+        value = "The permissions for this component."
     )
-    public AccessPolicyDTO getAccessPolicy() {
-        return accessPolicy;
+    public PermissionsDTO getPermissions() {
+        return permissions;
     }
 
-    public void setAccessPolicy(AccessPolicyDTO accessPolicy) {
-        this.accessPolicy = accessPolicy;
+    public void setPermissions(PermissionsDTO permissions) {
+        this.permissions = permissions;
+    }
+
+    /**
+     * The bulletins for this component.
+     *
+     * @return The bulletins
+     */
+    @ApiModelProperty(
+            value = "The bulletins for this component."
+    )
+    public List<BulletinDTO> getBulletins() {
+        return bulletins;
+    }
+
+    public void setBulletins(List<BulletinDTO> bulletins) {
+        this.bulletins = bulletins;
     }
 
     @Override
     public int hashCode() {
-        return id.hashCode();
+        return Objects.hash(id);
     }
 
     @Override
@@ -132,6 +152,6 @@ public class ComponentEntity extends Entity {
             return false;
         }
 
-        return id.equals(((ComponentEntity) obj).getId());
+        return Objects.equals(id, ((ComponentEntity)obj).id);
     }
 }

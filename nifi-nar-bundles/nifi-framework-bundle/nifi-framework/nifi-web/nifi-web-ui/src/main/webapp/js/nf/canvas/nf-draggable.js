@@ -60,7 +60,7 @@ nf.Draggable = (function () {
             return $.Deferred(function (deferred) {
                 $.ajax({
                     type: 'PUT',
-                    url: d.component.uri,
+                    url: d.uri,
                     data: JSON.stringify(entity),
                     dataType: 'json',
                     contentType: 'application/json'
@@ -76,8 +76,8 @@ nf.Draggable = (function () {
                 }).fail(function (xhr, status, error) {
                     if (xhr.status === 400 || xhr.status === 404 || xhr.status === 409) {
                         nf.Dialog.showOkDialog({
-                            dialogContent: nf.Common.escapeHtml(xhr.responseText),
-                            overlayBackground: true
+                            headerText: 'Component Position',
+                            dialogContent: nf.Common.escapeHtml(xhr.responseText)
                         });
                     } else {
                         nf.Common.handleAjaxError(xhr, status, error);
@@ -114,7 +114,7 @@ nf.Draggable = (function () {
             return $.Deferred(function (deferred) {
                 $.ajax({
                     type: 'PUT',
-                    url: d.component.uri,
+                    url: d.uri,
                     data: JSON.stringify(entity),
                     dataType: 'json',
                     contentType: 'application/json'
@@ -130,8 +130,8 @@ nf.Draggable = (function () {
                 }).fail(function (xhr, status, error) {
                     if (xhr.status === 400 || xhr.status === 404 || xhr.status === 409) {
                         nf.Dialog.showOkDialog({
-                            dialogContent: nf.Common.escapeHtml(xhr.responseText),
-                            overlayBackground: true
+                            headerText: 'Component Position',
+                            dialogContent: nf.Common.escapeHtml(xhr.responseText)
                         });
                     } else {
                         nf.Common.handleAjaxError(xhr, status, error);

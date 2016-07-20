@@ -21,6 +21,9 @@ nf.ng.LabelComponent = function (serviceProvider) {
     'use strict';
 
     function LabelComponent() {
+        this.icon = 'icon icon-label';
+
+        this.hoverIcon = 'icon icon-label-add';
     }
     LabelComponent.prototype = {
         constructor: LabelComponent,
@@ -58,12 +61,27 @@ nf.ng.LabelComponent = function (serviceProvider) {
         },
 
         /**
+         * The drag icon for the toolbox component.
+         *
+         * @param event
+         * @returns {*|jQuery|HTMLElement}
+         */
+        dragIcon: function (event) {
+            return $('<div class="icon icon-label-add"></div>');
+        },
+
+        /**
          * Create the label and add to the graph.
          *
          * @argument {object} pt        The point that the label was dropped.
          */
         createLabel: function(pt) {
             var labelEntity = {
+                'revision': nf.Client.getRevision({
+                    'revision': {
+                        'version': 0
+                    }
+                }),
                 'component': {
                     'width': nf.Label.config.width,
                     'height': nf.Label.config.height,
@@ -82,17 +100,15 @@ nf.ng.LabelComponent = function (serviceProvider) {
                 dataType: 'json',
                 contentType: 'application/json'
             }).done(function (response) {
-                if (nf.Common.isDefinedAndNotNull(response.component)) {
-                    // add the label to the graph
-                    nf.Graph.add({
-                        'labels': [response]
-                    }, {
-                        'selectAll': true
-                    });
+                // add the label to the graph
+                nf.Graph.add({
+                    'labels': [response]
+                }, {
+                    'selectAll': true
+                });
 
-                    // update the birdseye
-                    nf.Birdseye.refresh();
-                }
+                // update the birdseye
+                nf.Birdseye.refresh();
             }).fail(nf.Common.handleAjaxError);
         }
     }

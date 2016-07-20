@@ -28,6 +28,11 @@ nf.ng.GroupComponent = function (serviceProvider) {
      */
     var createGroup = function (groupName, pt) {
         var processGroupEntity = {
+            'revision': nf.Client.getRevision({
+                'revision': {
+                    'version': 0
+                }
+            }),
             'component': {
                 'name': groupName,
                 'position': {
@@ -45,24 +50,26 @@ nf.ng.GroupComponent = function (serviceProvider) {
             dataType: 'json',
             contentType: 'application/json'
         }).done(function (response) {
-            if (nf.Common.isDefinedAndNotNull(response.component)) {
-                // add the process group to the graph
-                nf.Graph.add({
-                    'processGroups': [response]
-                }, {
-                    'selectAll': true
-                });
+            // add the process group to the graph
+            nf.Graph.add({
+                'processGroups': [response]
+            }, {
+                'selectAll': true
+            });
 
-                // update component visibility
-                nf.Canvas.View.updateVisibility();
+            // update component visibility
+            nf.Canvas.View.updateVisibility();
 
-                // update the birdseye
-                nf.Birdseye.refresh();
-            }
+            // update the birdseye
+            nf.Birdseye.refresh();
         }).fail(nf.Common.handleAjaxError);
     };
 
     function GroupComponent() {
+
+        this.icon = 'icon icon-group';
+
+        this.hoverIcon = 'icon icon-group-add';
 
         /**
          * The group component's modal.
@@ -84,8 +91,8 @@ nf.ng.GroupComponent = function (serviceProvider) {
             init: function () {
                 // configure the new process group dialog
                 this.getElement().modal({
+                    scrollableContentStyle: 'scrollable',
                     headerText: 'Add Process Group',
-                    overlayBackground: false,
                     handler: {
                         close: function () {
                             $('#new-process-group-name').val('');
@@ -119,6 +126,7 @@ nf.ng.GroupComponent = function (serviceProvider) {
             }
         };
     }
+
     GroupComponent.prototype = {
         constructor: GroupComponent,
 
@@ -127,21 +135,21 @@ nf.ng.GroupComponent = function (serviceProvider) {
          *
          * @returns {*|jQuery|HTMLElement}
          */
-        getElement: function() {
+        getElement: function () {
             return $('#group-component');
         },
 
         /**
          * Enable the component.
          */
-        enabled: function() {
+        enabled: function () {
             this.getElement().attr('disabled', false);
         },
 
         /**
          * Disable the component.
          */
-        disabled: function() {
+        disabled: function () {
             this.getElement().attr('disabled', true);
         },
 
@@ -150,8 +158,18 @@ nf.ng.GroupComponent = function (serviceProvider) {
          *
          * @argument {object} pt        The point that the component was dropped.
          */
-        dropHandler: function(pt) {
+        dropHandler: function (pt) {
             this.promptForGroupName(pt);
+        },
+
+        /**
+         * The drag icon for the toolbox component.
+         *
+         * @param event
+         * @returns {*|jQuery|HTMLElement}
+         */
+        dragIcon: function (event) {
+            return $('<div class="icon icon-group-add"></div>');
         },
 
         /**
@@ -159,7 +177,7 @@ nf.ng.GroupComponent = function (serviceProvider) {
          *
          * @argument {object} pt        The point that the group was dropped.
          */
-        promptForGroupName: function(pt) {
+        promptForGroupName: function (pt) {
             var self = this;
             return $.Deferred(function (deferred) {
                 var addGroup = function () {
@@ -179,21 +197,32 @@ nf.ng.GroupComponent = function (serviceProvider) {
 
                 self.modal.update('setButtonModel', [{
                     buttonText: 'Add',
+                    color: {
+                        base: '#728E9B',
+                        hover: '#004849',
+                        text: '#ffffff'
+                    },
                     handler: {
                         click: addGroup
                     }
-                }, {
-                    buttonText: 'Cancel',
-                    handler: {
-                        click: function () {
-                            // reject the deferred
-                            deferred.reject();
+                },
+                    {
+                        buttonText: 'Cancel',
+                        color: {
+                            base: '#E3E8EB',
+                            hover: '#C7D2D7',
+                            text: '#004849'
+                        },
+                        handler: {
+                            click: function () {
+                                // reject the deferred
+                                deferred.reject();
 
-                            // close the dialog
-                            self.modal.hide();
+                                // close the dialog
+                                self.modal.hide();
+                            }
                         }
-                    }
-                }]);
+                    }]);
 
                 // show the dialog
                 self.modal.show();

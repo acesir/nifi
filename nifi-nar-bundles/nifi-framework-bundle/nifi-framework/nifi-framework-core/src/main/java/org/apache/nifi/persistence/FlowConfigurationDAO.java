@@ -16,7 +16,6 @@
  */
 package org.apache.nifi.persistence;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -31,6 +30,11 @@ import org.apache.nifi.controller.serialization.FlowSynchronizationException;
  * Interface to define service methods for FlowController configuration.
  */
 public interface FlowConfigurationDAO {
+
+    /**
+     * @return <code>true</code> if a file containing the flow is present, <code>false</code> otherwise
+     */
+    boolean isFlowPresent();
 
     /**
      * Loads the given controller with the values from the given proposed flow. If loading the proposed flow configuration would cause the controller to orphan flow files, then an
@@ -106,11 +110,4 @@ public interface FlowConfigurationDAO {
      */
     void save(FlowController flow, boolean archive) throws IOException;
 
-    /**
-     * Creates a File that can be used to write an archive to. The file will not actually exist on disk.
-     *
-     * @return a File that can be used to write an archive to
-     * @throws IOException if unable to access the required directories
-     */
-    File createArchiveFile() throws IOException;
 }

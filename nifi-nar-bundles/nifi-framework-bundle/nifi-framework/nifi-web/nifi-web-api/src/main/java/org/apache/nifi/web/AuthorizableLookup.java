@@ -22,12 +22,33 @@ import org.apache.nifi.controller.Snippet;
 public interface AuthorizableLookup {
 
     /**
+     * Get the authorizable Controller.
+     *
+     * @return authorizable
+     */
+    Authorizable getController();
+
+    /**
      * Get the authorizable Processor.
      *
      * @param id processor id
      * @return authorizable
      */
     Authorizable getProcessor(String id);
+
+    /**
+     * Get the authorizable for querying Provenance.
+     *
+     * @return authorizable
+     */
+    Authorizable getProvenance();
+
+    /**
+     * Get the authorizable for viewing/reseting Counters.
+     *
+     * @return authorizable
+     */
+    Authorizable getCounters();
 
     /**
      * Get the authorizable InputPort.
@@ -151,4 +172,41 @@ public interface AuthorizableLookup {
      * @return snippet of authorizable's
      */
     Snippet getSnippet(String id);
+
+    /**
+     * Get the {@link Authorizable} that represents the resource of users and user groups.
+     * @return authorizable
+     */
+    Authorizable getTenant();
+
+    /**
+     * Get the authorizable for access all policies.
+     *
+     * @return authorizable
+     */
+    Authorizable getPolicies();
+
+    /**
+     * Get the authorizable for the policy of the policy id.
+     *
+     * @param id id
+     * @return authorizable
+     */
+    Authorizable getAccessPolicyById(String id);
+
+    /**
+     * Get the authorizable for the policy of the specified resource.
+     *
+     * @param resource resource
+     * @return authorizable
+     */
+    Authorizable getAccessPolicyByResource(String resource);
+
+    /**
+     * Get the authorizable of the specified resource.
+     *
+     * @param resource resource
+     * @return authorizable
+     */
+    Authorizable getAuthorizableFromResource(final String resource);
 }

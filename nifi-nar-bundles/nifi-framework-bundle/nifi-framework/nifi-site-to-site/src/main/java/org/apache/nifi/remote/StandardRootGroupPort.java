@@ -16,7 +16,13 @@
  */
 package org.apache.nifi.remote;
 
-import org.apache.nifi.admin.service.KeyService;
+import org.apache.nifi.authorization.AuthorizationResult;
+import org.apache.nifi.authorization.AuthorizationResult.Result;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.resource.DataTransferAuthorizable;
+import org.apache.nifi.authorization.user.StandardNiFiUser;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.controller.AbstractPort;
@@ -71,7 +77,8 @@ public class StandardRootGroupPort extends AbstractPort implements RootGroupPort
     private final AtomicReference<Set<String>> userAccessControl = new AtomicReference<Set<String>>(new HashSet<String>());
     private final ProcessScheduler processScheduler;
     private final boolean secure;
-    private final KeyService keyService;
+    private final Authorizer authorizer;
+
     @SuppressWarnings("unused")
     private final BulletinRepository bulletinRepository;
     private final EventReporter eventReporter;
@@ -85,13 +92,13 @@ public class StandardRootGroupPort extends AbstractPort implements RootGroupPort
     private boolean shutdown = false;   // guarded by requestLock
 
     public StandardRootGroupPort(final String id, final String name, final ProcessGroup processGroup,
-            final TransferDirection direction, final ConnectableType type, final KeyService keyService,
+            final TransferDirection direction, final ConnectableType type, final Authorizer authorizer,
             final BulletinRepository bulletinRepository, final ProcessScheduler scheduler, final boolean secure) {
         super(id, name, processGroup, type, scheduler);
 
         this.processScheduler = scheduler;
         setScheduldingPeriod(MINIMUM_SCHEDULING_NANOS + " nanos");
-        this.keyService = keyService;
+        this.authorizer = authorizer;
         this.secure = secure;
         this.bulletinRepository = bulletinRepository;
         this.scheduler = scheduler;
@@ -349,7 +356,17 @@ public class StandardRootGroupPort extends AbstractPort implements RootGroupPort
             return new StandardPortAuthorizationResult(false, "User DN is not known");
         }
 
-        // TODO - Replace with call to Authorizer to authorize site to site data transfer
+        // perform the authorization
+        final Authorizable dataTransferAuthorizable = new DataTransferAuthorizable(this);
+        final AuthorizationResult result = dataTransferAuthorizable.checkAuthorization(authorizer, RequestAction.WRITE, new StandardNiFiUser(dn));
+
+        if (!Result.Approved.equals(result.getResult())) {
+            final String message = String.format("%s authorization failed for user %s because %s", this, dn, result.getExplanation());
+            logger.warn(message);
+            eventReporter.reportEvent(Severity.WARNING, CATEGORY, message);
+            return new StandardPortAuthorizationResult(false, message);
+        }
+
         return new StandardPortAuthorizationResult(true, "User is Authorized");
     }
 

@@ -25,14 +25,12 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.annotation.lifecycle.OnAdded;
@@ -59,7 +57,6 @@ import org.apache.nifi.processor.SimpleProcessLogger;
 import org.apache.nifi.processor.StandardValidationContextFactory;
 import org.apache.nifi.reporting.BulletinRepository;
 import org.apache.nifi.reporting.Severity;
-import org.apache.nifi.util.ObjectHolder;
 import org.apache.nifi.util.ReflectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,7 +69,7 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
     private static final Set<Method> validDisabledMethods;
     private final BulletinRepository bulletinRepo;
     private final StateManagerProvider stateManagerProvider;
-    private volatile ProcessGroup rootGroup;
+    private final FlowController flowController;
 
     static {
         // methods that are okay to be called when the service is disabled.
@@ -86,17 +83,15 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
         validDisabledMethods = Collections.unmodifiableSet(validMethods);
     }
 
-    public StandardControllerServiceProvider(final ProcessScheduler scheduler, final BulletinRepository bulletinRepo, final StateManagerProvider stateManagerProvider) {
-        // the following 2 maps must be updated atomically, but we do not lock around them because they are modified
-        // only in the createControllerService method, and both are modified before the method returns
+    public StandardControllerServiceProvider(final FlowController flowController, final ProcessScheduler scheduler, final BulletinRepository bulletinRepo,
+        final StateManagerProvider stateManagerProvider) {
+
+        this.flowController = flowController;
         this.processScheduler = scheduler;
         this.bulletinRepo = bulletinRepo;
         this.stateManagerProvider = stateManagerProvider;
     }
 
-    public void setRootProcessGroup(ProcessGroup rootGroup) {
-        this.rootGroup = rootGroup;
-    }
 
     private Class<?>[] getInterfaces(final Class<?> cls) {
         final List<Class<?>> allIfcs = new ArrayList<>();
@@ -149,7 +144,7 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
             final Class<? extends ControllerService> controllerServiceClass = rawClass.asSubclass(ControllerService.class);
 
             final ControllerService originalService = controllerServiceClass.newInstance();
-            final ObjectHolder<ControllerServiceNode> serviceNodeHolder = new ObjectHolder<>(null);
+            final AtomicReference<ControllerServiceNode> serviceNodeHolder = new AtomicReference<>(null);
             final InvocationHandler invocationHandler = new InvocationHandler() {
                 @Override
                 public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
@@ -374,98 +369,46 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
 
     @Override
     public void enableControllerServices(final Collection<ControllerServiceNode> serviceNodes) {
-        final Set<ControllerServiceNode> servicesToEnable = new HashSet<>();
-        // Ensure that all nodes are already disabled
-        for (final ControllerServiceNode serviceNode : serviceNodes) {
-            final ControllerServiceState curState = serviceNode.getState();
-            if (ControllerServiceState.DISABLED.equals(curState)) {
-                servicesToEnable.add(serviceNode);
-            } else {
-                logger.warn("Cannot enable {} because it is not disabled; current state is {}", serviceNode, curState);
+        boolean shouldStart = true;
+
+        Iterator<ControllerServiceNode> serviceIter = serviceNodes.iterator();
+        while (serviceIter.hasNext() && shouldStart) {
+            ControllerServiceNode controllerServiceNode = serviceIter.next();
+            List<ControllerServiceNode> requiredServices = ((StandardControllerServiceNode) controllerServiceNode).getRequiredControllerServices();
+            for (ControllerServiceNode requiredService : requiredServices) {
+                if (!requiredService.isActive() && !serviceNodes.contains(requiredService)) {
+                    shouldStart = false;
+                }
             }
         }
 
-        // determine the order to load the services. We have to ensure that if service A references service B, then B
-        // is enabled first, and so on.
-        final Map<String, ControllerServiceNode> idToNodeMap = new HashMap<>();
-        for (final ControllerServiceNode node : servicesToEnable) {
-            idToNodeMap.put(node.getIdentifier(), node);
-        }
-
-        // We can have many Controller Services dependent on one another. We can have many of these
-        // disparate lists of Controller Services that are dependent on one another. We refer to each
-        // of these as a branch.
-        final List<List<ControllerServiceNode>> branches = determineEnablingOrder(idToNodeMap);
-
-        if (branches.isEmpty()) {
-            logger.info("No Controller Services to enable");
-            return;
-        } else {
-            logger.info("Will enable {} Controller Services", servicesToEnable.size());
-        }
-
-        final Set<ControllerServiceNode> enabledNodes = Collections.synchronizedSet(new HashSet<ControllerServiceNode>());
-        final ExecutorService executor = Executors.newFixedThreadPool(Math.min(10, branches.size()), new ThreadFactory() {
-            @Override
-            public Thread newThread(final Runnable r) {
-                final Thread t = Executors.defaultThreadFactory().newThread(r);
-                t.setDaemon(true);
-                t.setName("Enable Controller Services");
-                return t;
-            }
-        });
-
-        for (final List<ControllerServiceNode> branch : branches) {
-            final Runnable enableBranchRunnable = new Runnable() {
-                @Override
-                public void run() {
-                    logger.debug("Enabling Controller Service Branch {}", branch);
-
-                    for (final ControllerServiceNode serviceNode : branch) {
-                        try {
-                            if (!enabledNodes.contains(serviceNode)) {
-                                enabledNodes.add(serviceNode);
-
-                                logger.info("Enabling {}", serviceNode);
-                                try {
-                                    serviceNode.verifyCanEnable();
-                                    processScheduler.enableControllerService(serviceNode);
-                                } catch (final Exception e) {
-                                    logger.error("Failed to enable " + serviceNode + " due to " + e);
-                                    if (logger.isDebugEnabled()) {
-                                        logger.error("", e);
-                                    }
-
-                                    if (bulletinRepo != null) {
-                                        bulletinRepo.addBulletin(BulletinFactory.createBulletin(
-                                            "Controller Service", Severity.ERROR.name(), "Could not start " + serviceNode + " due to " + e));
-                                    }
-                                }
-                            }
-
-                            // wait for service to finish enabling.
-                            while (ControllerServiceState.ENABLING.equals(serviceNode.getState())) {
-                                try {
-                                    Thread.sleep(100L);
-                                } catch (final InterruptedException ie) {
-                                }
-                            }
-
-                            logger.info("State for {} is now {}", serviceNode, serviceNode.getState());
-                        } catch (final Exception e) {
-                            logger.error("Failed to enable {} due to {}", serviceNode, e.toString());
-                            if (logger.isDebugEnabled()) {
-                                logger.error("", e);
-                            }
-                        }
+        if (shouldStart) {
+            for (ControllerServiceNode controllerServiceNode : serviceNodes) {
+                try {
+                    if (!controllerServiceNode.isActive()) {
+                        this.enableControllerServiceDependenciesFirst(controllerServiceNode);
+                    }
+                } catch (Exception e) {
+                    logger.error("Failed to enable " + controllerServiceNode + " due to " + e);
+                    if (this.bulletinRepo != null) {
+                        this.bulletinRepo.addBulletin(BulletinFactory.createBulletin("Controller Service",
+                                Severity.ERROR.name(), "Could not start " + controllerServiceNode + " due to " + e));
                     }
                 }
-            };
-
-            executor.submit(enableBranchRunnable);
+            }
         }
+    }
 
-        executor.shutdown();
+    private void enableControllerServiceDependenciesFirst(ControllerServiceNode serviceNode) {
+        for (ControllerServiceNode depNode : serviceNode.getRequiredControllerServices()) {
+            if (!depNode.isActive()) {
+                this.enableControllerServiceDependenciesFirst(depNode);
+            }
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Enabling " + serviceNode);
+        }
+        this.enableControllerService(serviceNode);
     }
 
     static List<List<ControllerServiceNode>> determineEnablingOrder(final Map<String, ControllerServiceNode> serviceNodeMap) {
@@ -519,6 +462,52 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
         return node == null ? null : node.getProxiedControllerService();
     }
 
+    private ProcessGroup getRootGroup() {
+        return flowController.getGroup(flowController.getRootGroupId());
+    }
+
+    @Override
+    public ControllerService getControllerServiceForComponent(final String serviceIdentifier, final String componentId) {
+        final ProcessGroup rootGroup = getRootGroup();
+
+        // Find the Process Group that owns the component.
+        ProcessGroup groupOfInterest = null;
+
+        final ProcessorNode procNode = rootGroup.findProcessor(componentId);
+        if (procNode == null) {
+            final ControllerServiceNode serviceNode = getControllerServiceNode(componentId);
+            if (serviceNode == null) {
+                final ReportingTaskNode taskNode = flowController.getReportingTaskNode(componentId);
+                if (taskNode == null) {
+                    throw new IllegalStateException("Could not find any Processor, Reporting Task, or Controller Service with identifier " + componentId);
+                }
+
+                // we have confirmed that the component is a reporting task. We can only reference Controller Services
+                // that are scoped at the FlowController level in this case.
+                final ControllerServiceNode rootServiceNode = flowController.getRootControllerService(serviceIdentifier);
+                return (rootServiceNode == null) ? null : rootServiceNode.getProxiedControllerService();
+            } else {
+                groupOfInterest = serviceNode.getProcessGroup();
+            }
+        } else {
+            groupOfInterest = procNode.getProcessGroup();
+        }
+
+        if (groupOfInterest == null) {
+            final ControllerServiceNode rootServiceNode = flowController.getRootControllerService(serviceIdentifier);
+            return (rootServiceNode == null) ? null : rootServiceNode.getProxiedControllerService();
+        }
+
+        final Set<ControllerServiceNode> servicesForGroup = groupOfInterest.getControllerServices(true);
+        for (final ControllerServiceNode serviceNode : servicesForGroup) {
+            if (serviceIdentifier.equals(serviceNode.getIdentifier())) {
+                return serviceNode.getProxiedControllerService();
+            }
+        }
+
+        return null;
+    }
+
     @Override
     public boolean isControllerServiceEnabled(final ControllerService service) {
         return isControllerServiceEnabled(service.getIdentifier());
@@ -538,26 +527,32 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
 
     @Override
     public ControllerServiceNode getControllerServiceNode(final String serviceIdentifier) {
-        final ProcessGroup group = rootGroup;
-        return group == null ? null : group.findControllerService(serviceIdentifier);
+        final ControllerServiceNode rootServiceNode = flowController.getRootControllerService(serviceIdentifier);
+        if (rootServiceNode != null) {
+            return rootServiceNode;
+        }
+
+        return getRootGroup().findControllerService(serviceIdentifier);
     }
 
+
     @Override
-    public Set<String> getControllerServiceIdentifiers(final Class<? extends ControllerService> serviceType, String groupId) {
-        ProcessGroup group = rootGroup;
-        if (group == null) {
-            return Collections.emptySet();
-        }
+    public Set<String> getControllerServiceIdentifiers(final Class<? extends ControllerService> serviceType, final String groupId) {
+        final Set<ControllerServiceNode> serviceNodes;
+        if (groupId == null) {
+            serviceNodes = flowController.getRootControllerServices();
+        } else {
+            ProcessGroup group = getRootGroup();
+            if (!FlowController.ROOT_GROUP_ID_ALIAS.equals(groupId) && !group.getIdentifier().equals(groupId)) {
+                group = group.findProcessGroup(groupId);
+            }
 
-        if (!FlowController.ROOT_GROUP_ID_ALIAS.equals(groupId) && !group.getIdentifier().equals(groupId)) {
-            group = group.findProcessGroup(groupId);
-        }
+            if (group == null) {
+                return Collections.emptySet();
+            }
 
-        if (group == null) {
-            return Collections.emptySet();
+            serviceNodes = group.getControllerServices(true);
         }
-
-        final Set<ControllerServiceNode> serviceNodes = group.getControllerServices(true);
 
         final Set<String> identifiers = new HashSet<>();
         for (final ControllerServiceNode serviceNode : serviceNodes) {
@@ -579,7 +574,8 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
     public void removeControllerService(final ControllerServiceNode serviceNode) {
         final ProcessGroup group = requireNonNull(serviceNode).getProcessGroup();
         if (group == null) {
-            throw new IllegalArgumentException("Cannot remote Controller Service " + serviceNode + " because it does not belong to any Process Group");
+            flowController.removeRootControllerService(serviceNode);
+            return;
         }
 
         group.removeControllerService(serviceNode);
@@ -587,12 +583,11 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
 
     @Override
     public Set<ControllerServiceNode> getAllControllerServices() {
-        final ProcessGroup group = rootGroup;
-        if (group == null) {
-            return Collections.emptySet();
-        }
+        final Set<ControllerServiceNode> allServices = new HashSet<>();
+        allServices.addAll(flowController.getRootControllerServices());
+        allServices.addAll(getRootGroup().findAllControllerServices());
 
-        return group.findAllControllerServices();
+        return allServices;
     }
 
     /**
@@ -708,5 +703,11 @@ public class StandardControllerServiceProvider implements ControllerServiceProvi
     @Override
     public void verifyCanStopReferencingComponents(final ControllerServiceNode serviceNode) {
         // we can always stop referencing components
+    }
+
+
+    @Override
+    public Set<String> getControllerServiceIdentifiers(final Class<? extends ControllerService> serviceType) throws IllegalArgumentException {
+        throw new UnsupportedOperationException("Cannot obtain Controller Service Identifiers for service type " + serviceType + " without providing a Process Group Identifier");
     }
 }

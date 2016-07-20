@@ -28,6 +28,7 @@
     background-size: 14px 14px;
     background-image: linear-gradient(to right, rgba(229, 235, 237, 1) 1px, transparent 1px), linear-gradient(to bottom, rgba(229, 235, 237, 1) 1px, transparent 1px);
     z-index: 1;
+    overflow: hidden;
 }
 
 .tooltip {
@@ -148,8 +149,11 @@ rect.selection, rect.drag-selection, rect.label-drag {
     fill: transparent;
 }
 
-image.add-connect {
+text.add-connect {
     cursor: pointer;
+    font-family: flowfont;
+    font-size: 28px;
+    fill: #004849;
 }
 
 /*
@@ -167,7 +171,6 @@ text.processor-type {
 }
 
 text.processor-icon {
-    fill: #ad9897;
     font-family: flowfont;
     font-size: 30px;
 }

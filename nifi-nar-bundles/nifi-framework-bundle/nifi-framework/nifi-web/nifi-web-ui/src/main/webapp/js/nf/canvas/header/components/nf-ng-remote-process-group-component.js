@@ -28,6 +28,11 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
     var createRemoteProcessGroup = function (pt) {
 
         var remoteProcessGroupEntity = {
+            'revision': nf.Client.getRevision({
+                'revision': {
+                    'version': 0
+                }
+            }),
             'component': {
                 'targetUri': $('#new-remote-process-group-uri').val(),
                 'position': {
@@ -52,23 +57,21 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
             dataType: 'json',
             contentType: 'application/json'
         }).done(function (response) {
-            if (nf.Common.isDefinedAndNotNull(response.component)) {
-                // add the processor to the graph
-                nf.Graph.add({
-                    'remoteProcessGroups': [response]
-                }, {
-                    'selectAll': true
-                });
+            // add the processor to the graph
+            nf.Graph.add({
+                'remoteProcessGroups': [response]
+            }, {
+                'selectAll': true
+            });
 
-                // hide the dialog
-                $('#new-remote-process-group-dialog').modal('hide');
+            // hide the dialog
+            $('#new-remote-process-group-dialog').modal('hide');
 
-                // update component visibility
-                nf.Canvas.View.updateVisibility();
+            // update component visibility
+            nf.Canvas.View.updateVisibility();
 
-                // update the birdseye
-                nf.Birdseye.refresh();
-            }
+            // update the birdseye
+            nf.Birdseye.refresh();
         }).fail(function (xhr, status, error) {
             if (xhr.status === 400) {
                 var errors = xhr.responseText.split('\n');
@@ -82,7 +85,6 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
 
                 nf.Dialog.showOkDialog({
                     dialogContent: content,
-                    overlayBackground: false,
                     headerText: 'Configuration Error'
                 });
             } else {
@@ -92,6 +94,10 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
     };
 
     function RemoteProcessGroupComponent() {
+
+        this.icon = 'icon icon-group-remote';
+
+        this.hoverIcon = 'icon icon-group-remote-add';
 
         /**
          * The remote group component's modal.
@@ -115,8 +121,8 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
                 var defaultYieldDuration = "10 sec";
                 // configure the new remote process group dialog
                 this.getElement().modal({
+                    scrollableContentStyle: 'scrollable',
                     headerText: 'Add Remote Process Group',
-                    overlayBackground: false,
                     handler: {
                         close: function () {
                             $('#new-remote-process-group-uri').val('');
@@ -172,6 +178,7 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
             }
         };
     }
+
     RemoteProcessGroupComponent.prototype = {
         constructor: RemoteProcessGroupComponent,
 
@@ -180,21 +187,21 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
          *
          * @returns {*|jQuery|HTMLElement}
          */
-        getElement: function() {
+        getElement: function () {
             return $('#group-remote-component');
         },
 
         /**
          * Enable the component.
          */
-        enabled: function() {
+        enabled: function () {
             this.getElement().attr('disabled', false);
         },
 
         /**
          * Disable the component.
          */
-        disabled: function() {
+        disabled: function () {
             this.getElement().attr('disabled', true);
         },
 
@@ -203,8 +210,18 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
          *
          * @argument {object} pt        The point that the component was dropped.
          */
-        dropHandler: function(pt) {
+        dropHandler: function (pt) {
             this.promptForRemoteProcessGroupUri(pt);
+        },
+
+        /**
+         * The drag icon for the toolbox component.
+         *
+         * @param event
+         * @returns {*|jQuery|HTMLElement}
+         */
+        dragIcon: function (event) {
+            return $('<div class="icon icon-group-remote-add"></div>');
         },
 
         /**
@@ -212,7 +229,7 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
          *
          * @argument {object} pt        The point that the remote group was dropped.
          */
-        promptForRemoteProcessGroupUri: function(pt) {
+        promptForRemoteProcessGroupUri: function (pt) {
             var self = this;
             var addRemoteProcessGroup = function () {
                 // create the remote process group
@@ -221,18 +238,28 @@ nf.ng.RemoteProcessGroupComponent = function (serviceProvider) {
 
             this.modal.update('setButtonModel', [{
                 buttonText: 'Add',
+                color: {
+                    base: '#728E9B',
+                    hover: '#004849',
+                    text: '#ffffff'
+                },
                 handler: {
                     click: addRemoteProcessGroup
                 }
-            }, {
-                buttonText: 'Cancel',
-                handler: {
-                    click: function () {
-                        self.modal.hide();
-                        ;
+            },
+                {
+                    buttonText: 'Cancel',
+                    color: {
+                        base: '#E3E8EB',
+                        hover: '#C7D2D7',
+                        text: '#004849'
+                    },
+                    handler: {
+                        click: function () {
+                            self.modal.hide();
+                        }
                     }
-                }
-            }]);
+                }]);
 
             // show the dialog
             this.modal.show();

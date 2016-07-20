@@ -16,8 +16,26 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.Set;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.api.dto.RemoteProcessGroupDTO;
+import org.apache.nifi.web.api.dto.RemoteProcessGroupPortDTO;
+import org.apache.nifi.web.api.dto.RevisionDTO;
+import org.apache.nifi.web.api.entity.RemoteProcessGroupEntity;
+import org.apache.nifi.web.api.entity.RemoteProcessGroupPortEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
@@ -33,28 +51,8 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.RemoteProcessGroupDTO;
-import org.apache.nifi.web.api.dto.RemoteProcessGroupPortDTO;
-import org.apache.nifi.web.api.dto.RevisionDTO;
-import org.apache.nifi.web.api.entity.RemoteProcessGroupEntity;
-import org.apache.nifi.web.api.entity.RemoteProcessGroupPortEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.net.URI;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Remote group.
@@ -91,36 +89,8 @@ public class RemoteProcessGroupResource extends ApplicationResource {
      * @return dtos
      */
     public RemoteProcessGroupEntity populateRemainingRemoteProcessGroupEntityContent(RemoteProcessGroupEntity remoteProcessGroupEntity) {
-        if (remoteProcessGroupEntity.getComponent() != null) {
-            populateRemainingRemoteProcessGroupContent(remoteProcessGroupEntity.getComponent());
-        }
+        remoteProcessGroupEntity.setUri(generateResourceUri("remote-process-groups", remoteProcessGroupEntity.getId()));
         return remoteProcessGroupEntity;
-    }
-
-    /**
-     * Populates the remaining content for each remote process group. The uri must be generated and the remote process groups name must be retrieved.
-     *
-     * @param remoteProcessGroups groups
-     * @return dtos
-     */
-    public Set<RemoteProcessGroupDTO> populateRemainingRemoteProcessGroupsContent(Set<RemoteProcessGroupDTO> remoteProcessGroups) {
-        for (RemoteProcessGroupDTO remoteProcessGroup : remoteProcessGroups) {
-            populateRemainingRemoteProcessGroupContent(remoteProcessGroup);
-        }
-        return remoteProcessGroups;
-    }
-
-    /**
-     * Populates the remaining content for the specified remote process group. The uri must be generated and the remote process groups name must be retrieved.
-     *
-     * @param remoteProcessGroup group
-     * @return dto
-     */
-    public RemoteProcessGroupDTO populateRemainingRemoteProcessGroupContent(RemoteProcessGroupDTO remoteProcessGroup) {
-        // populate the remaining content
-        remoteProcessGroup.setUri(generateResourceUri("remote-process-groups", remoteProcessGroup.getId()));
-
-        return remoteProcessGroup;
     }
 
     /**
@@ -172,7 +142,7 @@ public class RemoteProcessGroupResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable remoteProcessGroup = lookup.getRemoteProcessGroup(id);
-            remoteProcessGroup.authorize(authorizer, RequestAction.READ);
+            remoteProcessGroup.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the remote process group
@@ -248,7 +218,7 @@ public class RemoteProcessGroupResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable remoteProcessGroup = lookup.getRemoteProcessGroup(id);
-                remoteProcessGroup.authorize(authorizer, RequestAction.WRITE);
+                remoteProcessGroup.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteRemoteProcessGroup(id),
             () -> {
@@ -310,18 +280,23 @@ public class RemoteProcessGroupResource extends ApplicationResource {
                     + "remote process group port id of the requested resource (%s).", requestRemoteProcessGroupPort.getId(), portId));
         }
 
+        // ensure the group ids are the same
+        if (!id.equals(requestRemoteProcessGroupPort.getGroupId())) {
+            throw new IllegalArgumentException(String.format("The remote process group id (%s) in the request body does not equal the "
+                    + "remote process group id of the requested resource (%s).", requestRemoteProcessGroupPort.getGroupId(), id));
+        }
+
         if (isReplicateRequest()) {
             return replicate(HttpMethod.PUT, remoteProcessGroupPortEntity);
         }
 
-        // handle expects request (usually from the cluster manager)
         final Revision revision = getRevision(remoteProcessGroupPortEntity, id);
         return withWriteLock(
             serviceFacade,
             revision,
             lookup -> {
                 final Authorizable remoteProcessGroupInputPort = lookup.getRemoteProcessGroupInputPort(id, portId);
-                remoteProcessGroupInputPort.authorize(authorizer, RequestAction.WRITE);
+                remoteProcessGroupInputPort.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateRemoteProcessGroupInputPort(id, requestRemoteProcessGroupPort),
             () -> {
@@ -393,18 +368,24 @@ public class RemoteProcessGroupResource extends ApplicationResource {
                     + "remote process group port id of the requested resource (%s).", requestRemoteProcessGroupPort.getId(), portId));
         }
 
+        // ensure the group ids are the same
+        if (!id.equals(requestRemoteProcessGroupPort.getGroupId())) {
+            throw new IllegalArgumentException(String.format("The remote process group id (%s) in the request body does not equal the "
+                    + "remote process group id of the requested resource (%s).", requestRemoteProcessGroupPort.getGroupId(), id));
+        }
+
         if (isReplicateRequest()) {
             return replicate(HttpMethod.PUT, remoteProcessGroupPortEntity);
         }
 
         // handle expects request (usually from the cluster manager)
-        final Revision revision = getRevision(remoteProcessGroupPortEntity, portId);
+        final Revision revision = getRevision(remoteProcessGroupPortEntity, id);
         return withWriteLock(
             serviceFacade,
             revision,
             lookup -> {
                 final Authorizable remoteProcessGroupOutputPort = lookup.getRemoteProcessGroupOutputPort(id, portId);
-                remoteProcessGroupOutputPort.authorize(authorizer, RequestAction.WRITE);
+                remoteProcessGroupOutputPort.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateRemoteProcessGroupOutputPort(id, requestRemoteProcessGroupPort),
             () -> {
@@ -483,8 +464,8 @@ public class RemoteProcessGroupResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable remoteProcessGroup = lookup.getRemoteProcessGroup(id);
-                remoteProcessGroup.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getRemoteProcessGroup(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateRemoteProcessGroup(requestRemoteProcessGroup),
             () -> {
@@ -521,16 +502,10 @@ public class RemoteProcessGroupResource extends ApplicationResource {
                 }
 
                 // update the specified remote process group
-                final UpdateResult<RemoteProcessGroupEntity> updateResult = serviceFacade.updateRemoteProcessGroup(revision, requestRemoteProcessGroup);
-
-                final RemoteProcessGroupEntity entity = updateResult.getResult();
+                final RemoteProcessGroupEntity entity = serviceFacade.updateRemoteProcessGroup(revision, requestRemoteProcessGroup);
                 populateRemainingRemoteProcessGroupEntityContent(entity);
 
-                if (updateResult.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }

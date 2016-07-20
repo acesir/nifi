@@ -98,10 +98,17 @@ public class ProvenanceQueryEndpointMerger implements EndpointResponseMerger {
 
                 // populate the cluster identifier
                 for (final ProvenanceEventDTO eventDto : nodeResultDto.getProvenanceEvents()) {
-                    eventDto.setClusterNodeId(nodeIdentifier.getId());
-                    eventDto.setClusterNodeAddress(nodeAddress);
-                    // add node identifier to the event's id so that it is unique across cluster
-                    eventDto.setId(nodeIdentifier.getId() + eventDto.getId());
+                    // if the cluster node id or node address is not set, then we need to populate them. If they
+                    // are already set, we don't want to populate them because it will be the case that they were populated
+                    // by the Cluster Coordinator when it federated the request, and we are now just receiving the response
+                    // from the Cluster Coordinator.
+                    if (eventDto.getClusterNodeId() == null || eventDto.getClusterNodeAddress() == null) {
+                        eventDto.setClusterNodeId(nodeIdentifier.getId());
+                        eventDto.setClusterNodeAddress(nodeAddress);
+                        // add node identifier to the event's id so that it is unique across cluster
+                        eventDto.setId(nodeIdentifier.getId() + eventDto.getId());
+                    }
+
                     allResults.add(eventDto);
                 }
             }
@@ -176,8 +183,14 @@ public class ProvenanceQueryEndpointMerger implements EndpointResponseMerger {
             results.setErrors(errors);
         }
 
-        results.setTotalCount(totalRecords);
-        results.setTotal(FormatUtils.formatCount(totalRecords));
+        if (clientDto.getRequest().getMaxResults() != null && totalRecords >= clientDto.getRequest().getMaxResults()) {
+            results.setTotalCount(clientDto.getRequest().getMaxResults().longValue());
+            results.setTotal(FormatUtils.formatCount(clientDto.getRequest().getMaxResults().longValue()) + "+");
+        } else {
+            results.setTotal(FormatUtils.formatCount(totalRecords));
+            results.setTotalCount(totalRecords);
+        }
+
         results.setProvenanceEvents(selectedResults);
         results.setOldestEvent(oldestEventDate);
         results.setGenerated(new Date());

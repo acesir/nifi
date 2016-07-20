@@ -16,8 +16,23 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.Set;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.api.dto.LabelDTO;
+import org.apache.nifi.web.api.entity.LabelEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
@@ -33,25 +48,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.LabelDTO;
-import org.apache.nifi.web.api.entity.LabelEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing a Label.
@@ -86,32 +83,8 @@ public class LabelResource extends ApplicationResource {
      * @return entities
      */
     public LabelEntity populateRemainingLabelEntityContent(LabelEntity labelEntity) {
-        if (labelEntity.getComponent() != null) {
-            populateRemainingLabelContent(labelEntity.getComponent());
-        }
+        labelEntity.setUri(generateResourceUri("labels", labelEntity.getId()));
         return labelEntity;
-    }
-
-    /**
-     * Populates the uri for the specified labels.
-     *
-     * @param labels labels
-     * @return dtos
-     */
-    public Set<LabelDTO> populateRemainingLabelsContent(Set<LabelDTO> labels) {
-        for (LabelDTO label : labels) {
-            populateRemainingLabelContent(label);
-        }
-        return labels;
-    }
-
-    /**
-     * Populates the uri for the specified label.
-     */
-    public LabelDTO populateRemainingLabelContent(LabelDTO label) {
-        // populate the label href
-        label.setUri(generateResourceUri("labels", label.getId()));
-        return label;
     }
 
     /**
@@ -157,7 +130,7 @@ public class LabelResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable label = lookup.getLabel(id);
-            label.authorize(authorizer, RequestAction.READ);
+            label.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the label
@@ -233,21 +206,16 @@ public class LabelResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable label = lookup.getLabel(id);
-                label.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable  = lookup.getLabel(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             null,
             () -> {
                 // update the label
-                final UpdateResult<LabelEntity> result = serviceFacade.updateLabel(revision, requestLabelDTO);
-                final LabelEntity entity = result.getResult();
+                final LabelEntity entity = serviceFacade.updateLabel(revision, requestLabelDTO);
                 populateRemainingLabelEntityContent(entity);
 
-                if (result.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }
@@ -311,7 +279,7 @@ public class LabelResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable label = lookup.getLabel(id);
-                label.authorize(authorizer, RequestAction.WRITE);
+                label.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             null,
             () -> {

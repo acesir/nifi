@@ -51,9 +51,6 @@ $(document).ready(function () {
         $('div.loading-container').removeClass('ajax-loading');
     });
     
-    // initialize the tooltips
-    $('img.setting-icon').qtip(nf.Common.config.tooltipConfig);
-    
     // shows the logout link in the message-pane when appropriate and schedule token refresh
     if (nf.Storage.getItem('jwt') !== null) {
         $('#user-logout-container').css('display', 'block');
@@ -83,7 +80,7 @@ nf.Common = (function () {
     
     return {
         ANONYMOUS_USER_TEXT: 'Anonymous user',
-        
+
         config: {
             sensitiveText: 'Sensitive value set',
             tooltipConfig: {
@@ -92,14 +89,21 @@ nf.Common = (function () {
                 },
                 show: {
                     solo: true,
-                    effect: false
+                    effect: function(offset) {
+                        $(this).slideDown(100);
+                    }
                 },
                 hide: {
-                    effect: false
+                    effect: function(offset) {
+                        $(this).slideUp(100);
+                    }
                 },
                 position: {
-                    at: 'top right',
-                    my: 'bottom left'
+                    at: 'bottom center',
+                    my: 'top center',
+                    adjust: {
+                        y: 5
+                    }
                 }
             }
         },
@@ -110,17 +114,17 @@ nf.Common = (function () {
         SUPPORTS_SVG: !!document.createElementNS && !!document.createElementNS('http://www.w3.org/2000/svg', 'svg').createSVGRect,
 
         /**
-         * The authorities for the current user.
+         * The current user.
          */
-        authorities: undefined,
+        currentUser: undefined,
 
         /**
-         * Sets the authorities for the current user.
+         * Sets the current user.
          * 
-         * @argument {array} roles      The current users authorities
+         * @param currentUser
          */
-        setAuthorities: function (roles) {
-            nf.Common.authorities = roles;
+        setCurrentUser: function (currentUser) {
+            nf.Common.currentUser = currentUser;
         },
 
         /**
@@ -222,48 +226,115 @@ nf.Common = (function () {
          * @returns {boolean}
          */
         canAccessProvenance: function () {
-            var canAccessProvenance = false;
-            if (nf.Common.isDefinedAndNotNull(nf.Common.authorities)) {
-                $.each(nf.Common.authorities, function (i, authority) {
-                    if (authority === 'ROLE_PROVENANCE') {
-                        canAccessProvenance = true;
-                        return false;
-                    }
-                });
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.provenancePermissions.canRead === true;
+            } else {
+                return false;
             }
-            return canAccessProvenance;
         },
 
         /**
-         * Returns whether or not the current user is a DFM.
+         * Determines whether the current user can access counters.
+         * 
+         * @returns {boolean}
          */
-        isDFM: function () {
-            var dfm = false;
-            if (nf.Common.isDefinedAndNotNull(nf.Common.authorities)) {
-                $.each(nf.Common.authorities, function (i, authority) {
-                    if (authority === 'ROLE_DFM') {
-                        dfm = true;
-                        return false;
-                    }
-                });
+        canAccessCounters: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.countersPermissions.canRead === true;
+            } else {
+                return false;
             }
-            return dfm;
         },
 
         /**
-         * Returns whether or not the current user is a DFM.
+         * Determines whether the current user can modify counters.
+         * 
+         * @returns {boolean}
          */
-        isAdmin: function () {
-            var admin = false;
-            if (nf.Common.isDefinedAndNotNull(nf.Common.authorities)) {
-                $.each(nf.Common.authorities, function (i, authority) {
-                    if (authority === 'ROLE_ADMIN') {
-                        admin = true;
-                        return false;
-                    }
-                });
+        canModifyCounters: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.countersPermissions.canRead === true && nf.Common.currentUser.countersPermissions.canWrite === true;
+            } else {
+                return false;
             }
-            return admin;
+        },
+
+        /**
+         * Determines whether the current user can access tenants.
+         *
+         * @returns {boolean}
+         */
+        canAccessTenants: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.tenantsPermissions.canRead === true;
+            } else {
+                return false;
+            }
+        },
+
+        /**
+         * Determines whether the current user can modify tenants.
+         *
+         * @returns {boolean}
+         */
+        canModifyTenants: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.tenantsPermissions.canRead === true && nf.Common.currentUser.tenantsPermissions.canWrite === true;
+            } else {
+                return false;
+            }
+        },
+
+        /**
+         * Determines whether the current user can access counters.
+         *
+         * @returns {boolean}
+         */
+        canAccessPolicies: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.policiesPermissions.canRead === true;
+            } else {
+                return false;
+            }
+        },
+
+        /**
+         * Determines whether the current user can modify counters.
+         *
+         * @returns {boolean}
+         */
+        canModifyPolicies: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.policiesPermissions.canRead === true && nf.Common.currentUser.policiesPermissions.canWrite === true;
+            } else {
+                return false;
+            }
+        },
+
+        /**
+         * Determines whether the current user can access the controller.
+         *
+         * @returns {boolean}
+         */
+        canAccessController: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.controllerPermissions.canRead === true;
+            } else {
+                return false;
+            }
+        },
+
+        /**
+         * Determines whether the current user can modify the controller.
+         *
+         * @returns {boolean}
+         */
+        canModifyController: function () {
+            if (nf.Common.isDefinedAndNotNull(nf.Common.currentUser)) {
+                return nf.Common.currentUser.controllerPermissions.canRead === true && nf.Common.currentUser.controllerPermissions.canWrite === true;
+            } else {
+                return false;
+            }
         },
 
         /**
@@ -284,6 +355,23 @@ nf.Common = (function () {
         },
 
         /**
+         * Determine if an `element` has content overflow and adds the `.scrollable` class if it does.
+         *
+         * @param {HTMLElement} element The DOM element to toggle .scrollable upon.
+         */
+        toggleScrollable: function (element) {
+            if ($(element).is(':visible')){
+                if (element.offsetHeight < element.scrollHeight ||
+                    element.offsetWidth < element.scrollWidth) {
+                    // your element has overflow
+                    $(element).addClass('scrollable');
+                } else {
+                    $(element).removeClass('scrollable');
+                }
+            }
+        },
+
+        /**
          * Method for handling ajax errors.
          * 
          * @argument {object} xhr       The XmlHttpRequest
@@ -300,8 +388,8 @@ nf.Common = (function () {
                     $('#message-pane').show();
                 } else {
                     nf.Dialog.showOkDialog({
+                        headerText: 'Session Expired',
                         dialogContent: 'Your session has expired. Please press Ok to log in again.',
-                        overlayBackground: false,
                         okHandler: function () {
                             window.location = '/nifi';
                         }
@@ -338,10 +426,10 @@ nf.Common = (function () {
             }
 
             // status code 400, 403, 404, and 409 are expected response codes for common errors.
-            if (xhr.status === 400 || xhr.status === 403 || xhr.status === 404 || xhr.status === 409) {
+            if (xhr.status === 400 || xhr.status === 403 || xhr.status === 404 || xhr.status === 409 || xhr.status === 503) {
                 nf.Dialog.showOkDialog({
-                    dialogContent: nf.Common.escapeHtml(xhr.responseText),
-                    overlayBackground: false
+                    headerText: 'Error',
+                    dialogContent: nf.Common.escapeHtml(xhr.responseText)
                 });
             } else {
                 if (xhr.status < 99 || xhr.status === 12007 || xhr.status === 12029) {
@@ -504,7 +592,7 @@ nf.Common = (function () {
                 if (!nf.Common.isEmpty(propertyHistory.previousValues)) {
                     var history = [];
                     $.each(propertyHistory.previousValues, function (_, previousValue) {
-                        history.push('<li>' + nf.Common.escapeHtml(previousValue.previousValue) + ' - ' + nf.Common.escapeHtml(previousValue.timestamp) + ' (' + nf.Common.escapeHtml(previousValue.userName) + ')</li>');
+                        history.push('<li>' + nf.Common.escapeHtml(previousValue.previousValue) + ' - ' + nf.Common.escapeHtml(previousValue.timestamp) + ' (' + nf.Common.escapeHtml(previousValue.userIdentity) + ')</li>');
                     });
                     tipContent.push('<b>History:</b><ul class="property-info">' + history.join('') + '</ul>');
                 }
@@ -633,41 +721,6 @@ nf.Common = (function () {
                 return propertyDescriptor.supportsEl === true;
             } else {
                 return false;
-            }
-        },
-
-        /**
-         * Creates a form inline in order to submit the specified params to the specified URL
-         * using the specified method.
-         * 
-         * @param {string} url          The URL
-         * @param {object} params       An object with the params to include in the submission
-         */
-        post: function (url, params) {
-            // temporarily override beforeunload
-            var previousBeforeUnload = window.onbeforeunload;
-            window.onbeforeunload = null;
-
-            // create a form for submission
-            var form = $('<form></form>').attr({
-                'method': 'POST',
-                'action': url,
-                'style': 'display: none;'
-            });
-
-            // add each parameter when specified
-            if (nf.Common.isDefinedAndNotNull(params)) {
-                $.each(params, function (name, value) {
-                    $('<textarea></textarea>').attr('name', name).val(value).appendTo(form);
-                });
-            }
-
-            // submit the form and clean up
-            form.appendTo('body').submit().remove();
-
-            // restore previous beforeunload if necessary
-            if (previousBeforeUnload !== null) {
-                window.onbeforeunload = previousBeforeUnload;
             }
         },
 

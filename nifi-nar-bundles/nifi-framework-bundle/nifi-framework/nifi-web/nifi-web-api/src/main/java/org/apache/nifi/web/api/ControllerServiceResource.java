@@ -16,12 +16,37 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.controller.ScheduledState;
+import org.apache.nifi.controller.service.ControllerServiceState;
+import org.apache.nifi.ui.extension.UiExtension;
+import org.apache.nifi.ui.extension.UiExtensionMapping;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.UiExtensionType;
+import org.apache.nifi.web.api.dto.ComponentStateDTO;
+import org.apache.nifi.web.api.dto.ControllerServiceDTO;
+import org.apache.nifi.web.api.dto.PropertyDescriptorDTO;
+import org.apache.nifi.web.api.dto.RevisionDTO;
+import org.apache.nifi.web.api.entity.ComponentStateEntity;
+import org.apache.nifi.web.api.entity.ControllerServiceEntity;
+import org.apache.nifi.web.api.entity.ControllerServiceReferencingComponentsEntity;
+import org.apache.nifi.web.api.entity.PropertyDescriptorEntity;
+import org.apache.nifi.web.api.entity.UpdateControllerServiceReferenceRequestEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
@@ -39,39 +64,11 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.controller.ScheduledState;
-import org.apache.nifi.controller.service.ControllerServiceState;
-import org.apache.nifi.ui.extension.UiExtension;
-import org.apache.nifi.ui.extension.UiExtensionMapping;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UiExtensionType;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.ComponentStateDTO;
-import org.apache.nifi.web.api.dto.ControllerServiceDTO;
-import org.apache.nifi.web.api.dto.PropertyDescriptorDTO;
-import org.apache.nifi.web.api.dto.RevisionDTO;
-import org.apache.nifi.web.api.entity.ComponentStateEntity;
-import org.apache.nifi.web.api.entity.ControllerServiceEntity;
-import org.apache.nifi.web.api.entity.ControllerServiceReferencingComponentsEntity;
-import org.apache.nifi.web.api.entity.PropertyDescriptorEntity;
-import org.apache.nifi.web.api.entity.UpdateControllerServiceReferenceRequestEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * RESTful endpoint for managing a Controller Service.
@@ -113,6 +110,10 @@ public class ControllerServiceResource extends ApplicationResource {
      * @return dtos
      */
     public ControllerServiceEntity populateRemainingControllerServiceEntityContent(final ControllerServiceEntity controllerServiceEntity) {
+        // populate the controller service href
+        controllerServiceEntity.setUri(generateResourceUri("controller-services", controllerServiceEntity.getId()));
+
+        // populate the remaining content
         if (controllerServiceEntity.getComponent() != null) {
             populateRemainingControllerServiceContent(controllerServiceEntity.getComponent());
         }
@@ -121,24 +122,8 @@ public class ControllerServiceResource extends ApplicationResource {
 
     /**
      * Populates the uri for the specified controller service.
-     *
-     * @param controllerServices services
-     * @return dtos
-     */
-    public Set<ControllerServiceDTO> populateRemainingControllerServicesContent(final Set<ControllerServiceDTO> controllerServices) {
-        for (ControllerServiceDTO controllerService : controllerServices) {
-            populateRemainingControllerServiceContent(controllerService);
-        }
-        return controllerServices;
-    }
-
-    /**
-     * Populates the uri for the specified controller service.
      */
     public ControllerServiceDTO populateRemainingControllerServiceContent(final ControllerServiceDTO controllerService) {
-        // populate the controller service href
-        controllerService.setUri(generateResourceUri("controller-services", controllerService.getId()));
-
         // see if this processor has any ui extensions
         final UiExtensionMapping uiExtensionMapping = (UiExtensionMapping) servletContext.getAttribute("nifi-ui-extensions");
         if (uiExtensionMapping.hasUiExtension(controllerService.getType())) {
@@ -196,7 +181,7 @@ public class ControllerServiceResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable controllerService = lookup.getControllerService(id);
-            controllerService.authorize(authorizer, RequestAction.READ);
+            controllerService.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the controller service
@@ -260,7 +245,7 @@ public class ControllerServiceResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable controllerService = lookup.getControllerService(id);
-            controllerService.authorize(authorizer, RequestAction.READ);
+            controllerService.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the property descriptor
@@ -315,7 +300,7 @@ public class ControllerServiceResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable controllerService = lookup.getControllerService(id);
-            controllerService.authorize(authorizer, RequestAction.WRITE);
+            controllerService.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
         });
 
         // get the component state
@@ -369,14 +354,15 @@ public class ControllerServiceResource extends ApplicationResource {
             return replicate(HttpMethod.POST);
         }
 
-        // handle expects request (usually from the cluster manager)
         final boolean validationPhase = isValidationPhase(httpServletRequest);
-        if (validationPhase) {
+        if (validationPhase || !isTwoPhaseRequest(httpServletRequest)) {
             // authorize access
             serviceFacade.authorizeAccess(lookup -> {
-                final Authorizable controllerService = lookup.getControllerService(id);
-                controllerService.authorize(authorizer, RequestAction.WRITE);
+                final Authorizable processor = lookup.getControllerService(id);
+                processor.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             });
+        }
+        if (validationPhase) {
             serviceFacade.verifyCanClearControllerServiceState(id);
             return generateContinueResponse().build();
         }
@@ -434,7 +420,7 @@ public class ControllerServiceResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable controllerService = lookup.getControllerService(id);
-            controllerService.authorize(authorizer, RequestAction.READ);
+            controllerService.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the controller service
@@ -543,7 +529,7 @@ public class ControllerServiceResource extends ApplicationResource {
             lookup -> {
                 referencingRevisions.entrySet().stream().forEach(e -> {
                     final Authorizable controllerService = lookup.getControllerServiceReferencingComponent(id, e.getKey());
-                    controllerService.authorize(authorizer, RequestAction.WRITE);
+                    controllerService.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
                 });
             },
             () -> serviceFacade.verifyUpdateControllerServiceReferencingComponents(updateReferenceRequest.getId(), scheduledState, controllerServiceState),
@@ -623,23 +609,16 @@ public class ControllerServiceResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable controllerService = lookup.getControllerService(id);
-                controllerService.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getControllerService(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateControllerService(requestControllerServiceDTO),
             () -> {
                 // update the controller service
-                final UpdateResult<ControllerServiceEntity> updateResult = serviceFacade.updateControllerService(revision, requestControllerServiceDTO);
+                final ControllerServiceEntity entity = serviceFacade.updateControllerService(revision, requestControllerServiceDTO);
+                populateRemainingControllerServiceEntityContent(entity);
 
-                // build the response entity
-                final ControllerServiceEntity entity = updateResult.getResult();
-                populateRemainingControllerServiceContent(entity.getComponent());
-
-                if (updateResult.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }
@@ -706,7 +685,7 @@ public class ControllerServiceResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable controllerService = lookup.getControllerService(id);
-                controllerService.authorize(authorizer, RequestAction.WRITE);
+                controllerService.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteControllerService(id),
             () -> {

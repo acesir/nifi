@@ -16,8 +16,23 @@
  */
 package org.apache.nifi.web.api;
 
-import java.net.URI;
-import java.util.Set;
+import com.wordnik.swagger.annotations.Api;
+import com.wordnik.swagger.annotations.ApiOperation;
+import com.wordnik.swagger.annotations.ApiParam;
+import com.wordnik.swagger.annotations.ApiResponse;
+import com.wordnik.swagger.annotations.ApiResponses;
+import com.wordnik.swagger.annotations.Authorization;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.authorization.Authorizer;
+import org.apache.nifi.authorization.RequestAction;
+import org.apache.nifi.authorization.resource.Authorizable;
+import org.apache.nifi.authorization.user.NiFiUserUtils;
+import org.apache.nifi.web.NiFiServiceFacade;
+import org.apache.nifi.web.Revision;
+import org.apache.nifi.web.api.dto.PortDTO;
+import org.apache.nifi.web.api.entity.PortEntity;
+import org.apache.nifi.web.api.request.ClientIdParameter;
+import org.apache.nifi.web.api.request.LongParameter;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
@@ -33,25 +48,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.authorization.Authorizer;
-import org.apache.nifi.authorization.RequestAction;
-import org.apache.nifi.authorization.resource.Authorizable;
-import org.apache.nifi.web.NiFiServiceFacade;
-import org.apache.nifi.web.Revision;
-import org.apache.nifi.web.UpdateResult;
-import org.apache.nifi.web.api.dto.PortDTO;
-import org.apache.nifi.web.api.entity.PortEntity;
-import org.apache.nifi.web.api.request.ClientIdParameter;
-import org.apache.nifi.web.api.request.LongParameter;
-
-import com.wordnik.swagger.annotations.Api;
-import com.wordnik.swagger.annotations.ApiOperation;
-import com.wordnik.swagger.annotations.ApiParam;
-import com.wordnik.swagger.annotations.ApiResponse;
-import com.wordnik.swagger.annotations.ApiResponses;
-import com.wordnik.swagger.annotations.Authorization;
+import java.util.Set;
 
 /**
  * RESTful endpoint for managing an Input Port.
@@ -86,32 +83,8 @@ public class InputPortResource extends ApplicationResource {
          * @return ports
          */
     public PortEntity populateRemainingInputPortEntityContent(PortEntity inputPortEntity) {
-        if (inputPortEntity.getComponent() != null) {
-            populateRemainingInputPortContent(inputPortEntity.getComponent());
-        }
+        inputPortEntity.setUri(generateResourceUri("input-ports", inputPortEntity.getId()));
         return inputPortEntity;
-    }
-
-    /**
-     * Populates the uri for the specified input ports.
-     *
-     * @param inputPorts ports
-     * @return ports
-     */
-    public Set<PortDTO> populateRemainingInputPortsContent(Set<PortDTO> inputPorts) {
-        for (PortDTO inputPort : inputPorts) {
-            populateRemainingInputPortContent(inputPort);
-        }
-        return inputPorts;
-    }
-
-    /**
-     * Populates the uri for the specified input ports.
-     */
-    public PortDTO populateRemainingInputPortContent(PortDTO inputPort) {
-        // populate the input port uri
-        inputPort.setUri(generateResourceUri("input-ports", inputPort.getId()));
-        return inputPort;
     }
 
     /**
@@ -157,7 +130,7 @@ public class InputPortResource extends ApplicationResource {
         // authorize access
         serviceFacade.authorizeAccess(lookup -> {
             final Authorizable inputPort = lookup.getInputPort(id);
-            inputPort.authorize(authorizer, RequestAction.READ);
+            inputPort.authorize(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
         });
 
         // get the port
@@ -233,23 +206,16 @@ public class InputPortResource extends ApplicationResource {
             serviceFacade,
             revision,
             lookup -> {
-                final Authorizable inputPort = lookup.getInputPort(id);
-                inputPort.authorize(authorizer, RequestAction.WRITE);
+                Authorizable authorizable = lookup.getInputPort(id);
+                authorizable.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyUpdateInputPort(requestPortDTO),
             () -> {
                 // update the input port
-                final UpdateResult<PortEntity> updateResult = serviceFacade.updateInputPort(revision, requestPortDTO);
-
-                // build the response entity
-                final PortEntity entity = updateResult.getResult();
+                final PortEntity entity = serviceFacade.updateInputPort(revision, requestPortDTO);
                 populateRemainingInputPortEntityContent(entity);
 
-                if (updateResult.isNew()) {
-                    return clusterContext(generateCreatedResponse(URI.create(entity.getComponent().getUri()), entity)).build();
-                } else {
-                    return clusterContext(generateOkResponse(entity)).build();
-                }
+                return clusterContext(generateOkResponse(entity)).build();
             }
         );
     }
@@ -313,7 +279,7 @@ public class InputPortResource extends ApplicationResource {
             revision,
             lookup -> {
                 final Authorizable inputPort = lookup.getInputPort(id);
-                inputPort.authorize(authorizer, RequestAction.WRITE);
+                inputPort.authorize(authorizer, RequestAction.WRITE, NiFiUserUtils.getNiFiUser());
             },
             () -> serviceFacade.verifyDeleteInputPort(id),
             () -> {
